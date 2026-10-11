@@ -223,7 +223,7 @@ func (m *VPNManager) GetStatus() StatusInfo {
 	return StatusInfo{
 		State:            m.state,
 		Email:            m.cfg.Email,
-		LoggedIn:         m.cfg.RefreshToken != "",
+		LoggedIn:         m.cfg.RefreshToken != "" || m.state == "connected",
 		ActiveServer:     m.activeServer.Addr,
 		ActiveCountry:    m.activeServer.CountryName,
 		ActiveCity:       m.activeServer.CityName,

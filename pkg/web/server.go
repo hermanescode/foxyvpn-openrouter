@@ -32,17 +32,17 @@ func NewServer(cfg *config.Config, manager *vpn.VPNManager) *Server {
 func (s *Server) Start() error {
 	mux := http.NewServeMux()
 
-	// API routes
-	mux.HandleFunc("/api/status", s.authMiddleware(s.handleStatus))
-	mux.HandleFunc("/api/connect", s.authMiddleware(s.handleConnect))
-	mux.HandleFunc("/api/disconnect", s.authMiddleware(s.handleDisconnect))
-	mux.HandleFunc("/api/servers", s.authMiddleware(s.handleServers))
-	mux.HandleFunc("/api/login", s.authMiddleware(s.handleLogin))
-	mux.HandleFunc("/api/logout", s.authMiddleware(s.handleLogout))
-	mux.HandleFunc("/api/config", s.authMiddleware(s.handleConfig))
-	mux.HandleFunc("/api/logs", s.authMiddleware(s.handleLogs))
-	mux.HandleFunc("/api/logs/clear", s.authMiddleware(s.handleClearLogs))
-	mux.HandleFunc("/api/test", s.authMiddleware(s.handleTest))
+	// API routes (accessible across local network)
+	mux.HandleFunc("/api/status", s.handleStatus)
+	mux.HandleFunc("/api/connect", s.handleConnect)
+	mux.HandleFunc("/api/disconnect", s.handleDisconnect)
+	mux.HandleFunc("/api/servers", s.handleServers)
+	mux.HandleFunc("/api/login", s.handleLogin)
+	mux.HandleFunc("/api/logout", s.handleLogout)
+	mux.HandleFunc("/api/config", s.handleConfig)
+	mux.HandleFunc("/api/logs", s.handleLogs)
+	mux.HandleFunc("/api/logs/clear", s.handleClearLogs)
+	mux.HandleFunc("/api/test", s.handleTest)
 	mux.HandleFunc("/api/auth/check", s.handleAuthCheck)
 	mux.HandleFunc("/api/auth/login", s.handleWebAuthLogin)
 

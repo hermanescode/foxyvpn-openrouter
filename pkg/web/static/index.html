@@ -761,74 +761,93 @@
   async function fetchStatus() {
     try {
       const res = await fetch('/api/status');
-      if (res.status === 401) {
-        promptAuth();
-        return;
+      if (res.ok) {
+        currentStatus = await res.json();
+        renderStatus(currentStatus);
       }
-      currentStatus = await res.json();
-      renderStatus(currentStatus);
     } catch (e) {
       console.error(e);
     }
   }
 
+  function safeSetText(id, text) {
+    const el = document.getElementById(id);
+    if (el) el.innerText = text;
+  }
+
   function renderStatus(s) {
-    const badge = document.getElementById('statusBadge');
-    const badgeText = document.getElementById('statusText');
-    const powerBtn = document.getElementById('powerBtn');
-    const powerBtnText = document.getElementById('powerBtnText');
+    if (!s) return;
+    try {
+      const badge = document.getElementById('statusBadge');
+      const badgeText = document.getElementById('statusText');
+      if (badge && badgeText) {
+        const stateStr = s.state || 'disconnected';
+        badge.className = 'status-badge status-' + stateStr;
+        badgeText.innerText = stateStr.charAt(0).toUpperCase() + stateStr.slice(1);
+      }
 
-    badge.className = 'status-badge status-' + s.state;
-    badgeText.innerText = s.state.charAt(0).toUpperCase() + s.state.slice(1);
+      const powerBtn = document.getElementById('powerBtn');
+      const powerBtnText = document.getElementById('powerBtnText');
+      if (powerBtn && powerBtnText) {
+        if (s.state === 'connected') {
+          powerBtn.className = 'power-btn active';
+          powerBtnText.innerText = 'Disconnect';
+        } else if (s.state === 'connecting') {
+          powerBtn.className = 'power-btn connecting';
+          powerBtnText.innerText = 'Connecting...';
+        } else {
+          powerBtn.className = 'power-btn';
+          powerBtnText.innerText = 'Connect';
+        }
+      }
 
-    if (s.state === 'connected') {
-      powerBtn.className = 'power-btn active';
-      powerBtnText.innerText = 'Disconnect';
-    } else if (s.state === 'connecting') {
-      powerBtn.className = 'power-btn connecting';
-      powerBtnText.innerText = 'Connecting...';
-    } else {
-      powerBtn.className = 'power-btn';
-      powerBtnText.innerText = 'Connect';
-    }
+      safeSetText('pillLocation', s.active_country ? `${s.active_country} (${s.active_city})` : 'Auto');
+      safeSetText('pillLatency', s.latency_ms > 0 ? `${s.latency_ms} ms` : '-- ms');
+      safeSetText('pillExitIP', s.exit_ip ? `${s.exit_ip} (${s.exit_country})` : '--');
+      safeSetText('pillServer', s.active_server || '--');
 
-    document.getElementById('pillLocation').innerText = s.active_country ? `${s.active_country} (${s.active_city})` : 'Auto';
-    document.getElementById('pillLatency').innerText = s.latency_ms > 0 ? `${s.latency_ms} ms` : '-- ms';
-    document.getElementById('pillExitIP').innerText = s.exit_ip ? `${s.exit_ip} (${s.exit_country})` : '--';
-    document.getElementById('pillServer').innerText = s.active_server || '--';
+      // Quota
+      const totalBytes = s.quota_max || (50 * 1024 * 1024 * 1024);
+      const leftBytes = s.quota_left !== undefined ? s.quota_left : totalBytes;
+      const usedBytes = Math.max(0, totalBytes - leftBytes);
+      const pct = Math.min(100, Math.max(0, (usedBytes / totalBytes) * 100));
 
-    // Quota
-    const totalBytes = s.quota_max || (50 * 1024 * 1024 * 1024);
-    const leftBytes = s.quota_left !== undefined ? s.quota_left : totalBytes;
-    const usedBytes = Math.max(0, totalBytes - leftBytes);
-    const pct = Math.min(100, Math.max(0, (usedBytes / totalBytes) * 100));
+      safeSetText('quotaUsedText', `${formatBytes(usedBytes)} Used`);
+      safeSetText('quotaTotalText', `${formatBytes(totalBytes)} Total`);
+      safeSetText('quotaLeftText', `Remaining: ${formatBytes(leftBytes)}`);
+      const qp = document.getElementById('quotaProgress');
+      if (qp) qp.style.width = pct.toFixed(1) + '%';
+      if (s.quota_reset) {
+        safeSetText('quotaResetText', `Resets: ${s.quota_reset}`);
+      }
 
-    document.getElementById('quotaUsedText').innerText = `${formatBytes(usedBytes)} Used`;
-    document.getElementById('quotaTotalText').innerText = `${formatBytes(totalBytes)} Total`;
-    document.getElementById('quotaLeftText').innerText = `Remaining: ${formatBytes(leftBytes)}`;
-    document.getElementById('quotaProgress').style.width = pct.toFixed(1) + '%';
-    if (s.quota_reset) {
-      document.getElementById('quotaResetText').innerText = `Resets: ${s.quota_reset}`;
-    }
+      // Proxy endpoint
+      const host = window.location.hostname || '192.168.1.1';
+      let port = '1080';
+      if (s.socks_listen && s.socks_listen.includes(':')) {
+        port = s.socks_listen.split(':')[1];
+      }
+      safeSetText('socksProxyAddr', `socks5://${host}:${port}`);
+      safeSetText('httpProxyAddr', `http://${host}:${port}`);
+      document.querySelectorAll('.socks-host-ip').forEach(el => el.innerText = host);
 
-    // Proxy endpoint
-    const host = window.location.hostname || '192.168.1.1';
-    let port = '1080';
-    if (s.socks_listen && s.socks_listen.includes(':')) {
-      port = s.socks_listen.split(':')[1];
-    }
-    document.getElementById('socksProxyAddr').innerText = `socks5://${host}:${port}`;
-    document.getElementById('httpProxyAddr').innerText = `http://${host}:${port}`;
-    document.querySelectorAll('.socks-host-ip').forEach(el => el.innerText = host);
-
-    // Auth box
-    if (s.logged_in) {
-      document.getElementById('authLoggedOut').style.display = 'none';
-      document.getElementById('authLoggedIn').style.display = 'flex';
-      document.getElementById('accountEmail').innerText = s.email;
-    } else {
-      document.getElementById('authLoggedOut').style.display = 'flex';
-      document.getElementById('authLoggedIn').style.display = 'none';
+      // Auth box
+      const outBox = document.getElementById('authLoggedOut');
+      const inBox = document.getElementById('authLoggedIn');
+      if (s.logged_in) {
+        if (outBox) outBox.style.display = 'none';
+        if (inBox) inBox.style.display = 'flex';
+        safeSetText('accountEmail', s.email);
+      } else {
+        if (outBox) outBox.style.display = 'flex';
+        if (inBox) inBox.style.display = 'none';
+        if (s.email) {
+          const emailInput = document.getElementById('loginEmail');
+          if (emailInput && !emailInput.value) emailInput.value = s.email;
+        }
+      }
+    } catch (err) {
+      console.error('renderStatus error:', err);
     }
   }
 
