@@ -645,13 +645,54 @@
     </div>
   </div>
 
+  <!-- Connectivity Test Card -->
+  <div class="card">
+    <div class="card-title">
+      <span>🧪 Connectivity & Egress Test</span>
+    </div>
+    <p style="font-size: 0.8rem; color: var(--text-muted);">
+      تست مستقیم تونل VPN از داخل روتر به سمت اینترنت (برای بررسی امکان دسترسی به دامنه‌ها و IPها):
+    </p>
+    <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+      <button class="btn btn-secondary" onclick="runQuickTest('google.com:443')">🌐 Test google.com:443</button>
+      <button class="btn btn-secondary" onclick="runQuickTest('cloudflare.com:443')">☁️ Test cloudflare.com:443</button>
+      <button class="btn btn-secondary" onclick="runQuickTest('1.1.1.1:443')">⚡ Test 1.1.1.1:443</button>
+      <button class="btn btn-secondary" onclick="runQuickTest('8.8.8.8:53')">🔍 Test 8.8.8.8:53</button>
+    </div>
+    <div style="display: flex; gap: 10px; margin-top: 6px;">
+      <input type="text" id="customTestTarget" placeholder="e.g. youtube.com:443 or 1.1.1.1:443" style="flex: 1;">
+      <button id="btnRunTest" class="btn" onclick="runCustomTest()">Test Target</button>
+    </div>
+    <div id="testResultBox" style="display: none; padding: 10px 14px; border-radius: 8px; font-size: 0.8rem; font-family: 'JetBrains Mono', monospace;"></div>
+  </div>
+
+  <!-- DNS Configuration Hint -->
+  <div class="card" style="border-left: 4px solid #ff5e36;">
+    <div class="card-title" style="color: #ff7654;">
+      <span>⚠️ نکته بسیار مهم: حل مشکل باز نشدن سایت‌ها در مرورگر (DNS over SOCKS5)</span>
+    </div>
+    <div style="font-size: 0.82rem; line-height: 1.6; color: #c9d1d9;">
+      <p>علت خطای <code>Destination IP Prohibited</code> در لاگ‌ها این است که مرورگر شما دامنه‌ها را روی شبکه داخلی ایران Resolve می‌کند و سپس آی‌پی فیلترشده/ایرانی را به ساکس ارسال می‌کند که موزیلا آن را مسدود می‌کند.</p>
+      <p style="margin-top: 6px;"><strong>راه حل قطعی:</strong> باید گزینه <strong>Remote DNS</strong> را در کلاینت یا مرورگر خود روشن کنید:</p>
+      <ul style="margin-left: 20px; margin-top: 4px;">
+        <li><strong>مرورگر فایرفاکس (Firefox):</strong> در Settings ➔ Network Settings ➔ فعال‌سازی گزینه <strong>Proxy DNS when using SOCKS v5</strong></li>
+        <li><strong>اکستنشن SwitchyOmega (کروم/اج):</strong> انتخاب نوع پروتکل <strong>SOCKS5</strong> (نه SOCKS4) که به طور پیش‌فرض DNS را از طریق ساکس عبور می‌دهد.</li>
+        <li><strong>اپ تلگرام:</strong> به طور پیش‌فرض دامنه‌ها را از سمت سرور حل می‌کند و به همین دلیل بدون مشکل کار می‌کند.</li>
+        <li><strong>تست در ترمینال:</strong> همیشه از فلگ <code>socks5h://</code> (با حرف h) استفاده کنید تا DNS هم پروکسی شود: <code>curl -x socks5h://192.168.1.1:1080 https://google.com</code></li>
+      </ul>
+    </div>
+  </div>
+
   <!-- Logs Console -->
   <div class="card">
     <div style="display: flex; justify-content: space-between; align-items: center;">
       <div class="card-title">
         <span>📜 Live Logs</span>
       </div>
-      <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.75rem;" onclick="refreshLogs()">Clear / Refresh</button>
+      <div style="display: flex; gap: 8px;">
+        <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.75rem;" onclick="copyAllLogs()">📋 Copy Logs</button>
+        <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.75rem;" onclick="refreshLogs()">Clear / Refresh</button>
+      </div>
     </div>
     <div id="logsConsole" class="logs-console"></div>
   </div>
@@ -980,6 +1021,69 @@
           alert('Wrong password');
         }
       });
+    }
+  }
+
+  async function copyAllLogs() {
+    try {
+      const res = await fetch('/api/logs');
+      const logs = await res.json();
+      const text = logs.map(l => `[${l.timestamp}] ${l.message}`).join('\n');
+      await navigator.clipboard.writeText(text);
+      showToast('All logs copied to clipboard!');
+    } catch (e) {
+      showToast('Copy logs error: ' + e);
+    }
+  }
+
+  async function runQuickTest(target) {
+    document.getElementById('customTestTarget').value = target;
+    await executeTest(target);
+  }
+
+  async function runCustomTest() {
+    const target = document.getElementById('customTestTarget').value.trim();
+    if (!target) {
+      showToast('Enter a target host:port');
+      return;
+    }
+    await executeTest(target);
+  }
+
+  async function executeTest(target) {
+    const box = document.getElementById('testResultBox');
+    const btn = document.getElementById('btnRunTest');
+    btn.disabled = true;
+    btn.innerText = 'Testing...';
+    box.style.display = 'block';
+    box.style.background = 'rgba(255, 255, 255, 0.05)';
+    box.style.color = '#c9d1d9';
+    box.innerHTML = `Testing connection to <strong>${target}</strong> via Fastly tunnel...`;
+
+    try {
+      const res = await fetch('/api/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target })
+      });
+      const data = await res.json();
+      if (data.success) {
+        box.style.background = 'rgba(46, 160, 67, 0.15)';
+        box.style.color = '#3fb950';
+        box.innerHTML = `✅ <strong>Success!</strong> ${data.message} (Latency: ${data.latency_ms} ms)`;
+      } else {
+        box.style.background = 'rgba(248, 81, 73, 0.15)';
+        box.style.color = '#f85149';
+        box.innerHTML = `❌ <strong>Failed:</strong> ${data.error}`;
+      }
+      refreshLogs();
+    } catch (e) {
+      box.style.background = 'rgba(248, 81, 73, 0.15)';
+      box.style.color = '#f85149';
+      box.innerHTML = `❌ <strong>Error:</strong> ${e}`;
+    } finally {
+      btn.disabled = false;
+      btn.innerText = 'Test Target';
     }
   }
 

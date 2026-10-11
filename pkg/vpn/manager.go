@@ -627,6 +627,34 @@ func (m *VPNManager) checkHealthAndReconnect() {
 	}
 }
 
+func (m *VPNManager) TestTarget(target string) (int64, string, error) {
+	m.mu.RLock()
+	session := m.h2Session
+	m.mu.RUnlock()
+
+	if session == nil {
+		return 0, "", fmt.Errorf("VPN is not connected")
+	}
+
+	target = strings.TrimSpace(target)
+	if !strings.Contains(target, ":") {
+		target = target + ":443"
+	}
+
+	start := time.Now()
+	conn, err := session.OpenTunnel(target)
+	if err != nil {
+		m.AddLog(fmt.Sprintf("[Test] Connection to %s failed: %v", target, err))
+		return 0, "", err
+	}
+	defer conn.Close()
+	latency := time.Since(start).Milliseconds()
+
+	msg := fmt.Sprintf("Tunnel successfully opened to %s in %d ms", target, latency)
+	m.AddLog(fmt.Sprintf("[Test] %s", msg))
+	return latency, msg, nil
+}
+
 func (m *VPNManager) UpdateConfig(newCfg *config.Config) error {
 	m.mu.Lock()
 	rebindSocks := m.cfg.SocksListen != newCfg.SocksListen

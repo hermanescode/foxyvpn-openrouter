@@ -41,6 +41,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/logout", s.authMiddleware(s.handleLogout))
 	mux.HandleFunc("/api/config", s.authMiddleware(s.handleConfig))
 	mux.HandleFunc("/api/logs", s.authMiddleware(s.handleLogs))
+	mux.HandleFunc("/api/test", s.authMiddleware(s.handleTest))
 	mux.HandleFunc("/api/auth/check", s.handleAuthCheck)
 	mux.HandleFunc("/api/auth/login", s.handleWebAuthLogin)
 
@@ -313,4 +314,41 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	logs := s.manager.GetLogs()
 	_ = json.NewEncoder(w).Encode(logs)
+}
+
+func (s *Server) handleTest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Target string `json:"target"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if req.Target == "" {
+		req.Target = "google.com:443"
+	}
+
+	latency, msg, err := s.manager.TestTarget(req.Target)
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": false,
+			"target":  req.Target,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"success":    true,
+		"target":     req.Target,
+		"latency_ms": latency,
+		"message":    msg,
+	})
 }
