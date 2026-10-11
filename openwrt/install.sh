@@ -38,20 +38,28 @@ echo "Detected architecture: $ARCH -> using binary: $TARGET"
 # 2. Download Binary
 mkdir -p "$INSTALL_DIR" "$CONF_DIR"
 
+# Stop existing running instance so binary file is not locked (avoids ETXTBSY / curl 23 error)
+killall foxyvpn 2>/dev/null || true
+rm -f "$INSTALL_DIR/foxyvpn"
+
 LATEST_URL="https://github.com/$REPO/releases/latest/download/foxyvpn-$TARGET"
 echo "Downloading binary from $LATEST_URL..."
 
+TMP_BIN="/tmp/foxyvpn_download"
+rm -f "$TMP_BIN"
+
 if command -v curl >/dev/null 2>&1; then
-    curl -sSL "$LATEST_URL" -o "$INSTALL_DIR/foxyvpn"
+    curl -sSL "$LATEST_URL" -o "$TMP_BIN"
 elif command -v wget >/dev/null 2>&1; then
-    wget -qO "$INSTALL_DIR/foxyvpn" "$LATEST_URL"
+    wget -qO "$TMP_BIN" "$LATEST_URL"
 elif command -v uclient-fetch >/dev/null 2>&1; then
-    uclient-fetch -q -O "$INSTALL_DIR/foxyvpn" "$LATEST_URL"
+    uclient-fetch -q -O "$TMP_BIN" "$LATEST_URL"
 else
     echo "Error: Neither curl, wget nor uclient-fetch found."
     exit 1
 fi
 
+mv "$TMP_BIN" "$INSTALL_DIR/foxyvpn"
 chmod +x "$INSTALL_DIR/foxyvpn"
 
 # 3. Setup Default Config if missing
