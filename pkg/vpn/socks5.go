@@ -1,12 +1,14 @@
 package vpn
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +39,15 @@ var (
 	}
 	errUnsupportedAddrType = errors.New("unsupported SOCKS address type")
 )
+
+type bufferedConn struct {
+	net.Conn
+	r io.Reader
+}
+
+func (c *bufferedConn) Read(p []byte) (int, error) {
+	return c.r.Read(p)
+}
 
 type SocksServer struct {
 	listenAddr string
@@ -116,6 +127,24 @@ func (s *SocksServer) handleClient(conn net.Conn) {
 	defer conn.Close()
 
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	br := bufio.NewReader(conn)
+	firstByte, err := br.Peek(1)
+	if err != nil {
+		return
+	}
+
+	bConn := &bufferedConn{Conn: conn, r: br}
+
+	if firstByte[0] == 0x05 {
+		// SOCKS5 protocol
+		s.handleSocks5(bConn)
+	} else {
+		// HTTP / HTTPS Proxy (Mixed Port)
+		s.handleHttpProxy(bConn, br)
+	}
+}
+
+func (s *SocksServer) handleSocks5(conn net.Conn) {
 	target, cmd, replyCode, err := handshakeSOCKS5(conn)
 	if err != nil {
 		if replyCode != 0 {
@@ -126,7 +155,6 @@ func (s *SocksServer) handleClient(conn net.Conn) {
 	_ = conn.SetDeadline(time.Time{})
 
 	if cmd == socksCmdUdpAssociate {
-		// Handle UDP Associate for DNS queries
 		s.handleUdpAssociate(conn)
 		return
 	}
@@ -144,9 +172,8 @@ func (s *SocksServer) handleClient(conn net.Conn) {
 	isIP := net.ParseIP(host) != nil
 
 	// If destination is an IP and port is 443 (HTTPS) or 80 (HTTP),
-	// we sniff the real domain name (SNI / Host header) to bypass DNS poisoning!
+	// sniff the real domain name (SNI / Host header)
 	if isIP && (port == "443" || port == "80") {
-		// Acknowledge SOCKS5 connection immediately so client sends initial packet
 		if err := writeSOCKSReply(conn, socksReplySuccess, conn.LocalAddr()); err != nil {
 			return
 		}
@@ -176,7 +203,6 @@ func (s *SocksServer) handleClient(conn net.Conn) {
 
 		upstream, err := opener.OpenTunnel(actualTarget)
 		if err != nil && sniffedDomain != "" {
-			// If domain failed, attempt fallback to original target
 			upstream, err = opener.OpenTunnel(target)
 		}
 		if err != nil {
@@ -185,7 +211,6 @@ func (s *SocksServer) handleClient(conn net.Conn) {
 		}
 		defer upstream.Close()
 
-		// Write initial sniffed packet to upstream
 		if _, err := upstream.Write(initialData); err != nil {
 			return
 		}
@@ -210,8 +235,111 @@ func (s *SocksServer) handleClient(conn net.Conn) {
 	relayBidirectional(conn, upstream)
 }
 
+func (s *SocksServer) handleHttpProxy(conn net.Conn, br *bufio.Reader) {
+	req, err := http.ReadRequest(br)
+	if err != nil {
+		return
+	}
+	_ = conn.SetDeadline(time.Time{})
+
+	s.mu.Lock()
+	opener := s.opener
+	s.mu.Unlock()
+
+	if opener == nil {
+		_, _ = conn.Write([]byte("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n"))
+		return
+	}
+
+	if req.Method == http.MethodConnect {
+		// HTTPS CONNECT tunnel
+		target := req.Host
+		if !strings.Contains(target, ":") {
+			target = target + ":443"
+		}
+
+		host, port, _ := net.SplitHostPort(target)
+		isIP := net.ParseIP(host) != nil
+
+		_, err = conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+		if err != nil {
+			return
+		}
+
+		if isIP && port == "443" {
+			_ = conn.SetDeadline(time.Now().Add(8 * time.Second))
+			peekBuf := make([]byte, 2048)
+			n, err := conn.Read(peekBuf)
+			if err != nil || n == 0 {
+				return
+			}
+			_ = conn.SetDeadline(time.Time{})
+
+			initialData := peekBuf[:n]
+			sniffedDomain := ExtractSNI(initialData)
+
+			actualTarget := target
+			if sniffedDomain != "" {
+				actualTarget = net.JoinHostPort(sniffedDomain, port)
+				s.log(fmt.Sprintf("[HTTP-Proxy] Sniffed domain %s (from IP %s) -> Routing to %s", sniffedDomain, target, actualTarget))
+			}
+
+			upstream, err := opener.OpenTunnel(actualTarget)
+			if err != nil && sniffedDomain != "" {
+				upstream, err = opener.OpenTunnel(target)
+			}
+			if err != nil {
+				s.log(fmt.Sprintf("[HTTP-Proxy] Connect to %s failed: %v", actualTarget, err))
+				return
+			}
+			defer upstream.Close()
+
+			if _, err := upstream.Write(initialData); err != nil {
+				return
+			}
+
+			relayBidirectional(conn, upstream)
+			return
+		}
+
+		upstream, err := opener.OpenTunnel(target)
+		if err != nil {
+			s.log(fmt.Sprintf("[HTTP-Proxy] Connect to %s failed: %v", target, err))
+			return
+		}
+		defer upstream.Close()
+
+		relayBidirectional(conn, upstream)
+		return
+	}
+
+	// Plain HTTP request (GET, POST, etc.)
+	targetHost := req.URL.Host
+	if targetHost == "" {
+		targetHost = req.Host
+	}
+	if !strings.Contains(targetHost, ":") {
+		targetHost = targetHost + ":80"
+	}
+
+	upstream, err := opener.OpenTunnel(targetHost)
+	if err != nil {
+		s.log(fmt.Sprintf("[HTTP-Proxy] Connect to %s failed: %v", targetHost, err))
+		_, _ = conn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"))
+		return
+	}
+	defer upstream.Close()
+
+	req.Header.Del("Proxy-Connection")
+	req.Header.Del("Proxy-Authorization")
+	if err := req.Write(upstream); err != nil {
+		return
+	}
+
+	relayBidirectional(conn, upstream)
+}
+
 func (s *SocksServer) handleUdpAssociate(tcpConn net.Conn) {
-	// Allocate a UDP socket for relaying
 	udpAddr, err := net.ResolveUDPAddr("udp", "0.0.0.0:0")
 	if err != nil {
 		_ = writeSOCKSReply(tcpConn, socksReplyFailure, nil)
@@ -224,7 +352,6 @@ func (s *SocksServer) handleUdpAssociate(tcpConn net.Conn) {
 	}
 	defer udpConn.Close()
 
-	// Get local address to inform client
 	localTCPAddr, ok := tcpConn.LocalAddr().(*net.TCPAddr)
 	relayIP := "127.0.0.1"
 	if ok && localTCPAddr.IP != nil && !localTCPAddr.IP.IsUnspecified() {
@@ -239,7 +366,6 @@ func (s *SocksServer) handleUdpAssociate(tcpConn net.Conn) {
 
 	s.log(fmt.Sprintf("[SOCKS5] UDP Associate relay opened on %s:%d", relayIP, relayPort))
 
-	// Keep TCP connection alive until client disconnects
 	buf := make([]byte, 1)
 	for {
 		_, err := tcpConn.Read(buf)
@@ -263,7 +389,6 @@ func handshakeSOCKS5(conn net.Conn) (string, byte, byte, error) {
 		return "", 0, 0, err
 	}
 
-	// Prefer NoAuth (0x00), then UserPass (0x02)
 	selectedMethod := byte(socksAuthNoAccept)
 	for _, m := range methods {
 		if m == socksAuthNoAuth {
@@ -284,7 +409,6 @@ func handshakeSOCKS5(conn net.Conn) (string, byte, byte, error) {
 		return "", 0, 0, err
 	}
 
-	// If Username/Password auth was chosen (RFC 1929), accept any credentials
 	if selectedMethod == socksAuthUserPass {
 		var ver [1]byte
 		if _, err := io.ReadFull(conn, ver[:]); err != nil {
@@ -306,7 +430,6 @@ func handshakeSOCKS5(conn net.Conn) (string, byte, byte, error) {
 		if _, err := io.ReadFull(conn, passwd); err != nil {
 			return "", 0, 0, err
 		}
-		// Reply Success (version 0x01, status 0x00)
 		if _, err := conn.Write([]byte{0x01, 0x00}); err != nil {
 			return "", 0, 0, err
 		}

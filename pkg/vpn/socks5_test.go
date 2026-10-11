@@ -1,9 +1,12 @@
 package vpn
 
 import (
+	"bufio"
 	"crypto/tls"
+	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"testing"
 	"time"
 )
@@ -33,7 +36,7 @@ func TestSocksAuthUserPassAndSNI(t *testing.T) {
 	}
 	defer server.Stop()
 
-	// 1. Test Client with Username/Password auth (like socks://Og@192.168.8.1:1080)
+	// 1. Test SOCKS5 with Username/Password auth (like socks://Og@192.168.8.1:1080)
 	conn, err := net.Dial("tcp", server.listener.Addr().String())
 	if err != nil {
 		t.Fatalf("Dial failed: %v", err)
@@ -85,7 +88,6 @@ func TestSocksAuthUserPassAndSNI(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	// Verify that mockOpener was called with "youtube.com:443" instead of "46.245.77.82:443"!
 	found := false
 	for _, target := range mockOpener.openedTargets {
 		if target == "youtube.com:443" {
@@ -96,4 +98,46 @@ func TestSocksAuthUserPassAndSNI(t *testing.T) {
 	if !found {
 		t.Fatalf("Expected SNI sniffing to route to youtube.com:443, got targets: %v", mockOpener.openedTargets)
 	}
+}
+
+func TestMixedPortHttpProxy(t *testing.T) {
+	mockOpener := &mockTunnelOpener{}
+	server := NewSocksServer("127.0.0.1:0", mockOpener, nil)
+	if err := server.Start(); err != nil {
+		t.Fatalf("Failed to start socks server: %v", err)
+	}
+	defer server.Stop()
+
+	// Connect with HTTP CONNECT to the SAME port
+	conn, err := net.Dial("tcp", server.listener.Addr().String())
+	if err != nil {
+		t.Fatalf("Dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	reqStr := "CONNECT www.google.com:443 HTTP/1.1\r\nHost: www.google.com:443\r\n\r\n"
+	_, _ = conn.Write([]byte(reqStr))
+
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("ReadResponse failed: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("Expected 200 Connection Established, got %d", resp.StatusCode)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	found := false
+	for _, target := range mockOpener.openedTargets {
+		if target == "www.google.com:443" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("Expected HTTP proxy to route to www.google.com:443, got targets: %v", mockOpener.openedTargets)
+	}
+	fmt.Println("Mixed Port HTTP Proxy Verified Successfully!")
 }

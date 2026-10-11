@@ -571,20 +571,25 @@
       </div>
     </div>
 
-    <!-- SOCKS5 Endpoint Card -->
+    <!-- SOCKS5 & HTTP Mixed Proxy Endpoint Card -->
     <div class="card">
       <div class="card-title">
-        <span>🧦 SOCKS5 Proxy Endpoint</span>
+        <span>🧦 Mixed Proxy Endpoint (SOCKS5 + HTTP)</span>
       </div>
       <p style="font-size: 0.8rem; color: var(--text-muted);">
-        Point your browser, Telegram, or OpenWrt clients to this local SOCKS5 proxy:
+        پورت ترکیبی: روی همین پورت هم پروتکل <strong>SOCKS5</strong> و هم <strong>HTTP/HTTPS Proxy</strong> به صورت همزمان فعال است:
       </p>
       <div class="proxy-box">
         <span id="socksProxyAddr">socks5://192.168.1.1:1080</span>
-        <button class="copy-btn" onclick="copyProxyAddr()">📋 Copy</button>
+        <button class="copy-btn" onclick="copyProxyAddr()">📋 Copy SOCKS5</button>
+      </div>
+      <div class="proxy-box" style="margin-top: 6px; color: #3fb950;">
+        <span id="httpProxyAddr">http://192.168.1.1:1080</span>
+        <button class="copy-btn" onclick="copyHttpProxyAddr()">📋 Copy HTTP</button>
       </div>
       <p style="font-size: 0.75rem; color: var(--text-muted); font-family: 'JetBrains Mono', monospace;">
-        curl -x socks5h://<span class="socks-host-ip">192.168.1.1</span>:1080 https://ipinfo.io
+        curl -x socks5h://<span class="socks-host-ip">192.168.1.1</span>:1080 https://ipinfo.io<br/>
+        curl -x http://<span class="socks-host-ip">192.168.1.1</span>:1080 https://ipinfo.io
       </p>
     </div>
   </div>
@@ -802,6 +807,7 @@
       port = s.socks_listen.split(':')[1];
     }
     document.getElementById('socksProxyAddr').innerText = `socks5://${host}:${port}`;
+    document.getElementById('httpProxyAddr').innerText = `http://${host}:${port}`;
     document.querySelectorAll('.socks-host-ip').forEach(el => el.innerText = host);
 
     // Auth box
@@ -959,7 +965,14 @@
   function copyProxyAddr() {
     const text = document.getElementById('socksProxyAddr').innerText;
     navigator.clipboard.writeText(text).then(() => {
-      showToast('Proxy address copied!');
+      showToast('SOCKS5 proxy address copied!');
+    });
+  }
+
+  function copyHttpProxyAddr() {
+    const text = document.getElementById('httpProxyAddr').innerText;
+    navigator.clipboard.writeText(text).then(() => {
+      showToast('HTTP proxy address copied!');
     });
   }
 
