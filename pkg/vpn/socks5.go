@@ -668,23 +668,26 @@ func isAllowedWebPort(port string) bool {
 }
 
 func relayBidirectional(c1, c2 net.Conn) {
-	var wg sync.WaitGroup
-	wg.Add(2)
+	done := make(chan struct{}, 2)
 
-	copyOne := func(dst, src net.Conn) {
-		defer wg.Done()
+	go func() {
 		buf := copyBufferPool.Get().([]byte)
 		defer copyBufferPool.Put(buf)
-		_, _ = io.CopyBuffer(dst, src, buf)
-		if closeWriter, ok := dst.(interface{ CloseWrite() error }); ok {
-			_ = closeWriter.CloseWrite()
-		} else {
-			_ = dst.Close()
-		}
-	}
+		_, _ = io.CopyBuffer(c1, c2, buf)
+		done <- struct{}{}
+		_ = c1.Close()
+	}()
 
-	go copyOne(c1, c2)
-	go copyOne(c2, c1)
+	go func() {
+		buf := copyBufferPool.Get().([]byte)
+		defer copyBufferPool.Put(buf)
+		_, _ = io.CopyBuffer(c2, c1, buf)
+		done <- struct{}{}
+		_ = c2.Close()
+	}()
 
-	wg.Wait()
+	<-done
+	_ = c1.Close()
+	_ = c2.Close()
+	<-done
 }

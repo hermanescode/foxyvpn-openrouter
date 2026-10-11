@@ -10,6 +10,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -85,12 +87,48 @@ type VPNManager struct {
 	running      bool
 }
 
+func (m *VPNManager) getLogPath() string {
+	if m.cfg != nil && m.cfg.FilePath() != "" {
+		return filepath.Join(filepath.Dir(m.cfg.FilePath()), "foxyvpn.log")
+	}
+	return "/etc/foxyvpn/foxyvpn.log"
+}
+
+func (m *VPNManager) loadPersistedLogs() {
+	p := m.getLogPath()
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return
+	}
+	lines := strings.Split(string(data), "\n")
+	m.logsMu.Lock()
+	defer m.logsMu.Unlock()
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, " ", 2)
+		ts := time.Now().Format("15:04:05")
+		msg := line
+		if len(parts) == 2 && strings.HasPrefix(parts[0], "[") && strings.HasSuffix(parts[0], "]") {
+			ts = strings.Trim(parts[0], "[]")
+			msg = parts[1]
+		}
+		m.logs = append(m.logs, LogEntry{Timestamp: ts, Message: msg})
+	}
+	if len(m.logs) > 300 {
+		m.logs = m.logs[len(m.logs)-300:]
+	}
+}
+
 func NewVPNManager(cfg *config.Config) *VPNManager {
 	m := &VPNManager{
 		cfg:      cfg,
 		state:    "disconnected",
 		stopChan: make(chan struct{}),
 	}
+	m.loadPersistedLogs()
 	m.socksServer = NewSocksServer(cfg.SocksListen, nil, func(msg string) {
 		m.AddLog(msg)
 	}, func() {
@@ -125,23 +163,33 @@ func (m *VPNManager) AddLogLevel(level, msg string) {
 		return
 	}
 
-	m.logsMu.Lock()
-	defer m.logsMu.Unlock()
-
+	nowStr := time.Now().Format("15:04:05")
 	entry := LogEntry{
-		Timestamp: time.Now().Format("15:04:05"),
+		Timestamp: nowStr,
 		Message:   msg,
 	}
+
+	m.logsMu.Lock()
 	m.logs = append(m.logs, entry)
 	if len(m.logs) > 300 {
 		m.logs = m.logs[len(m.logs)-300:]
+	}
+	m.logsMu.Unlock()
+
+	// Append to persistent log file
+	p := m.getLogPath()
+	f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err == nil {
+		_, _ = f.WriteString(fmt.Sprintf("[%s] %s\n", nowStr, msg))
+		_ = f.Close()
 	}
 }
 
 func (m *VPNManager) ClearLogs() {
 	m.logsMu.Lock()
-	defer m.logsMu.Unlock()
 	m.logs = nil
+	m.logsMu.Unlock()
+	_ = os.Truncate(m.getLogPath(), 0)
 }
 
 func (m *VPNManager) GetLogs() []LogEntry {

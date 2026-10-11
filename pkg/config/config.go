@@ -65,6 +65,10 @@ func LoadConfig(filePath string) (*Config, error) {
 	return cfg, nil
 }
 
+func (c *Config) FilePath() string {
+	return c.filePath
+}
+
 func (c *Config) Save() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()

@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	defaultTunnelWriteBufSize    = 1 << 20
+	defaultTunnelWriteBufSize    = 64 * 1024
 	upstreamKeepAliveInterval    = 10 * time.Second
 	upstreamKeepAlivePingTimeout = 5 * time.Second
 )
@@ -120,10 +120,7 @@ func (s *H2ProxySession) runKeepAlive(ctx context.Context) {
 }
 
 func (s *H2ProxySession) IsAlive() bool {
-	if !s.alive.Load() {
-		return false
-	}
-	return s.cc.CanTakeNewRequest()
+	return s.alive.Load()
 }
 
 func (s *H2ProxySession) OpenTunnel(authority string) (net.Conn, error) {
