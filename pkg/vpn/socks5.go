@@ -339,8 +339,20 @@ func (s *SocksServer) handleHttpProxy(conn net.Conn, br *bufio.Reader) {
 	relayBidirectional(conn, upstream)
 }
 
+func (s *SocksServer) getOpener() TunnelOpener {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.opener
+}
+
 func (s *SocksServer) handleUdpAssociate(tcpConn net.Conn) {
-	udpAddr, err := net.ResolveUDPAddr("udp", "0.0.0.0:0")
+	localTCPAddr, ok := tcpConn.LocalAddr().(*net.TCPAddr)
+	bindIP := "0.0.0.0"
+	if ok && localTCPAddr.IP != nil && !localTCPAddr.IP.IsUnspecified() {
+		bindIP = localTCPAddr.IP.String()
+	}
+
+	udpAddr, err := net.ResolveUDPAddr("udp", bindIP+":0")
 	if err != nil {
 		_ = writeSOCKSReply(tcpConn, socksReplyFailure, nil)
 		return
@@ -352,25 +364,94 @@ func (s *SocksServer) handleUdpAssociate(tcpConn net.Conn) {
 	}
 	defer udpConn.Close()
 
-	localTCPAddr, ok := tcpConn.LocalAddr().(*net.TCPAddr)
-	relayIP := "127.0.0.1"
-	if ok && localTCPAddr.IP != nil && !localTCPAddr.IP.IsUnspecified() {
-		relayIP = localTCPAddr.IP.String()
-	}
 	relayPort := udpConn.LocalAddr().(*net.UDPAddr).Port
-
-	bndAddr, _ := net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%d", relayIP, relayPort))
+	bndAddr, _ := net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%d", bindIP, relayPort))
 	if err := writeSOCKSReply(tcpConn, socksReplySuccess, bndAddr); err != nil {
 		return
 	}
 
-	s.log(fmt.Sprintf("[SOCKS5] UDP Associate relay opened on %s:%d", relayIP, relayPort))
+	s.log(fmt.Sprintf("[SOCKS5] UDP Associate relay opened on %s:%d (DoH enabled)", bindIP, relayPort))
 
-	buf := make([]byte, 1)
+	stopChan := make(chan struct{})
+	go func() {
+		buf := make([]byte, 1)
+		for {
+			_, err := tcpConn.Read(buf)
+			if err != nil {
+				break
+			}
+		}
+		close(stopChan)
+		_ = udpConn.Close()
+	}()
+
+	resolver := NewDohResolver(s.getOpener)
+
+	buf := make([]byte, 4096)
 	for {
-		_, err := tcpConn.Read(buf)
+		n, clientAddr, err := udpConn.ReadFromUDP(buf)
 		if err != nil {
-			break
+			select {
+			case <-stopChan:
+				return
+			default:
+				return
+			}
+		}
+
+		if n < 10 {
+			continue
+		}
+
+		if buf[0] != 0 || buf[1] != 0 || buf[2] != 0 {
+			continue // No fragmentation
+		}
+
+		atyp := buf[3]
+		headerLen := 0
+		var dstPort int
+
+		switch atyp {
+		case socksAtypIPv4:
+			headerLen = 10
+			if n < headerLen {
+				continue
+			}
+			dstPort = int(binary.BigEndian.Uint16(buf[8:10]))
+		case socksAtypDomain:
+			domainLen := int(buf[4])
+			headerLen = 5 + domainLen + 2
+			if n < headerLen {
+				continue
+			}
+			dstPort = int(binary.BigEndian.Uint16(buf[5+domainLen : 5+domainLen+2]))
+		case socksAtypIPv6:
+			headerLen = 22
+			if n < headerLen {
+				continue
+			}
+			dstPort = int(binary.BigEndian.Uint16(buf[20:22]))
+		default:
+			continue
+		}
+
+		payload := make([]byte, n-headerLen)
+		copy(payload, buf[headerLen:n])
+		headerCopy := make([]byte, headerLen)
+		copy(headerCopy, buf[:headerLen])
+
+		// If destination is DNS port 53, resolve via DoH over Fastly tunnel!
+		if dstPort == 53 {
+			go func(query []byte, respHeader []byte, to *net.UDPAddr) {
+				ans, err := resolver.Resolve(query)
+				if err != nil {
+					return
+				}
+				respPacket := make([]byte, len(respHeader)+len(ans))
+				copy(respPacket, respHeader)
+				copy(respPacket[len(respHeader):], ans)
+				_, _ = udpConn.WriteToUDP(respPacket, to)
+			}(payload, headerCopy, clientAddr)
 		}
 	}
 }
