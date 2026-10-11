@@ -1,0 +1,996 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FoxyVPN | OpenRouter Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0d1117;
+      --card-bg: rgba(22, 27, 34, 0.75);
+      --card-border: rgba(255, 255, 255, 0.08);
+      --card-hover: rgba(255, 255, 255, 0.12);
+      --text-main: #f0f6fc;
+      --text-muted: #8b949e;
+      --primary: #ff5e36;
+      --primary-hover: #ff7654;
+      --accent-purple: #ab47bc;
+      --success: #2ea043;
+      --success-glow: rgba(46, 160, 67, 0.3);
+      --warning: #d29922;
+      --error: #f85149;
+      --error-glow: rgba(248, 81, 73, 0.3);
+      --radius: 14px;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: radial-gradient(circle at 10% 20%, rgba(255, 94, 54, 0.07) 0%, transparent 40%),
+                  radial-gradient(circle at 90% 80%, rgba(171, 71, 188, 0.07) 0%, transparent 40%),
+                  var(--bg);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 24px 16px;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 960px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    /* Header */
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 16px 20px;
+      background: var(--card-bg);
+      backdrop-filter: blur(16px);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .brand-icon {
+      width: 38px;
+      height: 38px;
+      background: linear-gradient(135deg, #ff5e36 0%, #ab47bc 100%);
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 4px 14px rgba(255, 94, 54, 0.35);
+    }
+
+    .brand-icon svg {
+      width: 22px;
+      height: 22px;
+      fill: #fff;
+    }
+
+    .brand-title h1 {
+      font-size: 1.15rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .brand-title p {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    /* Status Badge */
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      border: 1px solid transparent;
+      transition: all 0.25s ease;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+
+    .status-connected {
+      background: rgba(46, 160, 67, 0.15);
+      border-color: rgba(46, 160, 67, 0.4);
+      color: #3fb950;
+    }
+    .status-connected .status-dot {
+      background: #3fb950;
+      box-shadow: 0 0 10px #3fb950;
+      animation: pulse 2s infinite;
+    }
+
+    .status-connecting {
+      background: rgba(56, 139, 253, 0.15);
+      border-color: rgba(56, 139, 253, 0.4);
+      color: #58a6ff;
+    }
+    .status-connecting .status-dot {
+      background: #58a6ff;
+      animation: spin 1s infinite linear;
+    }
+
+    .status-disconnected {
+      background: rgba(139, 148, 158, 0.15);
+      border-color: rgba(139, 148, 158, 0.3);
+      color: #8b949e;
+    }
+    .status-disconnected .status-dot {
+      background: #8b949e;
+    }
+
+    .status-error {
+      background: rgba(248, 81, 73, 0.15);
+      border-color: rgba(248, 81, 73, 0.4);
+      color: #f85149;
+    }
+    .status-error .status-dot {
+      background: #f85149;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.9); }
+    }
+
+    /* Grid layout */
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+
+    @media (max-width: 768px) {
+      .grid-2 {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    /* Cards */
+    .card {
+      background: var(--card-bg);
+      backdrop-filter: blur(16px);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      transition: border-color 0.2s ease;
+    }
+
+    .card:hover {
+      border-color: var(--card-hover);
+    }
+
+    .card-title {
+      font-size: 0.95rem;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text-main);
+    }
+
+    /* Main Connection Hero Card */
+    .hero-card {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      padding: 28px 20px;
+      gap: 20px;
+    }
+
+    .power-btn {
+      width: 100px;
+      height: 100px;
+      border-radius: 50%;
+      border: 2px solid var(--card-border);
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--text-muted);
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+    }
+
+    .power-btn svg {
+      width: 36px;
+      height: 36px;
+      fill: currentColor;
+      transition: transform 0.2s ease;
+    }
+
+    .power-btn:hover {
+      transform: scale(1.05);
+      border-color: var(--card-hover);
+    }
+
+    .power-btn.active {
+      background: linear-gradient(135deg, rgba(46, 160, 67, 0.2) 0%, rgba(46, 160, 67, 0.4) 100%);
+      border-color: #3fb950;
+      color: #3fb950;
+      box-shadow: 0 0 28px var(--success-glow);
+    }
+
+    .power-btn.connecting {
+      border-color: #58a6ff;
+      color: #58a6ff;
+      animation: pulse 1.5s infinite;
+    }
+
+    .info-pills {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 10px;
+    }
+
+    .pill {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 6px 12px;
+      font-size: 0.8rem;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--text-muted);
+    }
+
+    .pill strong {
+      color: var(--text-main);
+      font-weight: 600;
+    }
+
+    /* Quota bar */
+    .quota-box {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .quota-header {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.85rem;
+    }
+
+    .progress-bar-bg {
+      width: 100%;
+      height: 10px;
+      background: rgba(255, 255, 255, 0.06);
+      border-radius: 5px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #3fb950 0%, #ff5e36 100%);
+      border-radius: 5px;
+      width: 0%;
+      transition: width 0.5s ease;
+    }
+
+    .quota-meta {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    /* Proxy details box */
+    .proxy-box {
+      background: rgba(0, 0, 0, 0.3);
+      border: 1px solid var(--card-border);
+      border-radius: 10px;
+      padding: 12px 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.85rem;
+      color: #58a6ff;
+    }
+
+    .copy-btn {
+      background: rgba(255, 255, 255, 0.08);
+      border: none;
+      border-radius: 6px;
+      padding: 6px 10px;
+      color: var(--text-main);
+      cursor: pointer;
+      font-size: 0.75rem;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      transition: background 0.2s ease;
+    }
+
+    .copy-btn:hover {
+      background: rgba(255, 255, 255, 0.16);
+    }
+
+    /* Form elements */
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    label {
+      font-size: 0.8rem;
+      font-weight: 500;
+      color: var(--text-muted);
+    }
+
+    input, select {
+      background: rgba(0, 0, 0, 0.35);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 10px 12px;
+      color: var(--text-main);
+      font-family: inherit;
+      font-size: 0.85rem;
+      outline: none;
+      transition: border-color 0.2s ease;
+    }
+
+    input:focus, select:focus {
+      border-color: #58a6ff;
+    }
+
+    .btn {
+      background: var(--primary);
+      border: none;
+      border-radius: 8px;
+      padding: 10px 16px;
+      color: #fff;
+      font-weight: 600;
+      font-size: 0.85rem;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+
+    .btn:hover {
+      background: var(--primary-hover);
+    }
+
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text-main);
+    }
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.14);
+    }
+
+    .btn-danger {
+      background: rgba(248, 81, 73, 0.18);
+      border: 1px solid rgba(248, 81, 73, 0.4);
+      color: #f85149;
+    }
+    .btn-danger:hover {
+      background: rgba(248, 81, 73, 0.3);
+    }
+
+    /* Logs console */
+    .logs-console {
+      background: #05080c;
+      border: 1px solid var(--card-border);
+      border-radius: 10px;
+      padding: 12px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      height: 180px;
+      overflow-y: auto;
+      color: #c9d1d9;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .log-line {
+      line-height: 1.4;
+      word-break: break-all;
+    }
+
+    .log-time {
+      color: var(--text-muted);
+      margin-right: 8px;
+    }
+
+    /* Modal */
+    .modal-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(8px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+      padding: 16px;
+    }
+
+    .modal {
+      background: #161b22;
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+      width: 100%;
+      max-width: 440px;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    }
+
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .close-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 1.2rem;
+    }
+
+    /* Helper notification */
+    #toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: #1f2937;
+      border: 1px solid var(--card-border);
+      color: #fff;
+      padding: 10px 18px;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      display: none;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.4);
+      z-index: 200;
+    }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <!-- Header -->
+  <header>
+    <div class="brand">
+      <div class="brand-icon">
+        <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14.5v-9l6 4.5-6 4.5z"/></svg>
+      </div>
+      <div class="brand-title">
+        <h1>FoxyVPN OpenRouter</h1>
+        <p>Unofficial Firefox VPN client for OpenWrt</p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <div id="statusBadge" class="status-badge status-disconnected">
+        <div class="status-dot"></div>
+        <span id="statusText">Disconnected</span>
+      </div>
+      <button class="btn btn-secondary" onclick="openSettingsModal()" title="Settings">
+        ⚙️ Settings
+      </button>
+    </div>
+  </header>
+
+  <!-- Hero Power Card -->
+  <div class="card hero-card">
+    <button id="powerBtn" class="power-btn" onclick="toggleConnect()">
+      <svg viewBox="0 0 24 24"><path d="M13 3h-2v10h2V3zm4.83 2.17l-1.42 1.42A7.92 7.92 0 0 1 20 12c0 4.42-3.58 8-8 8s-8-3.58-8-8c0-2.48 1.13-4.7 2.91-6.17L5.49 4.41C3.36 6.23 2 8.96 2 12c0 5.52 4.48 10 10 10s10-4.48 10-10c0-3.04-1.36-5.77-3.49-7.59z"/></svg>
+      <span id="powerBtnText" style="font-size: 0.75rem; font-weight: 600;">Connect</span>
+    </button>
+
+    <div class="info-pills">
+      <div class="pill">
+        Location: <strong id="pillLocation">Auto / Best Ping</strong>
+      </div>
+      <div class="pill">
+        Latency: <strong id="pillLatency">-- ms</strong>
+      </div>
+      <div class="pill">
+        Exit IP: <strong id="pillExitIP">--</strong>
+      </div>
+      <div class="pill">
+        Edge Server: <strong id="pillServer">--</strong>
+      </div>
+    </div>
+  </div>
+
+  <!-- Middle Grid: Quota & SOCKS5 Endpoint -->
+  <div class="grid-2">
+    <!-- Quota Card -->
+    <div class="card">
+      <div class="card-title">
+        <span>📊 50 GB Monthly Traffic Quota</span>
+      </div>
+      <div class="quota-box">
+        <div class="quota-header">
+          <span id="quotaUsedText">0.00 GB Used</span>
+          <span id="quotaTotalText">50.00 GB Total</span>
+        </div>
+        <div class="progress-bar-bg">
+          <div id="quotaProgress" class="progress-bar-fill"></div>
+        </div>
+        <div class="quota-meta">
+          <span id="quotaLeftText">Remaining: 50.00 GB</span>
+          <span id="quotaResetText">Resets: Next month</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- SOCKS5 Endpoint Card -->
+    <div class="card">
+      <div class="card-title">
+        <span>🧦 SOCKS5 Proxy Endpoint</span>
+      </div>
+      <p style="font-size: 0.8rem; color: var(--text-muted);">
+        Point your browser, Telegram, or OpenWrt clients to this local SOCKS5 proxy:
+      </p>
+      <div class="proxy-box">
+        <span id="socksProxyAddr">socks5://192.168.1.1:1080</span>
+        <button class="copy-btn" onclick="copyProxyAddr()">📋 Copy</button>
+      </div>
+      <p style="font-size: 0.75rem; color: var(--text-muted); font-family: 'JetBrains Mono', monospace;">
+        curl -x socks5h://<span class="socks-host-ip">192.168.1.1</span>:1080 https://ipinfo.io
+      </p>
+    </div>
+  </div>
+
+  <!-- Bottom Grid: Account & Server Selector -->
+  <div class="grid-2">
+    <!-- Server Selector Card -->
+    <div class="card">
+      <div class="card-title">
+        <span>🌍 Server / Exit Location</span>
+      </div>
+      <div class="form-group">
+        <label for="serverModeSelect">Selection Mode</label>
+        <select id="serverModeSelect" onchange="onModeChange()">
+          <option value="auto">Auto (Lowest Latency / Fastest Edge)</option>
+          <option value="manual">Manual Selection</option>
+        </select>
+      </div>
+      <div id="manualServerContainer" style="display: none; flex-direction: column; gap: 12px;">
+        <div class="form-group">
+          <label for="countrySelect">Country</label>
+          <select id="countrySelect" onchange="onCountryChange()">
+            <option value="">Select country...</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="serverSelect">Edge Server</label>
+          <select id="serverSelect">
+            <option value="">Auto in country</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Firefox Account Card -->
+    <div class="card">
+      <div class="card-title">
+        <span>🦊 Firefox Account (FxA)</span>
+      </div>
+      <div id="authLoggedOut" style="display: flex; flex-direction: column; gap: 12px;">
+        <div class="form-group">
+          <label for="loginEmail">Email</label>
+          <input type="email" id="loginEmail" placeholder="you@domain.com">
+        </div>
+        <div class="form-group">
+          <label for="loginPassword">Password</label>
+          <input type="password" id="loginPassword" placeholder="••••••••">
+        </div>
+        <button id="loginBtn" class="btn" onclick="doLogin()">Sign In</button>
+      </div>
+      <div id="authLoggedIn" style="display: none; flex-direction: column; gap: 14px;">
+        <p style="font-size: 0.85rem;">Signed in as: <strong id="accountEmail">user@duck.com</strong></p>
+        <p style="font-size: 0.75rem; color: var(--text-muted);">
+          VPN proxy pass active and auto-renewed via Mozilla Guardian.
+        </p>
+        <button class="btn btn-danger" onclick="doLogout()">Sign Out</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Logs Console -->
+  <div class="card">
+    <div style="display: flex; justify-content: space-between; align-items: center;">
+      <div class="card-title">
+        <span>📜 Live Logs</span>
+      </div>
+      <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.75rem;" onclick="refreshLogs()">Clear / Refresh</button>
+    </div>
+    <div id="logsConsole" class="logs-console"></div>
+  </div>
+</div>
+
+<!-- Settings Modal -->
+<div id="settingsModal" class="modal-overlay">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 style="font-size: 1rem; font-weight: 600;">Settings</h3>
+      <button class="close-btn" onclick="closeSettingsModal()">&times;</button>
+    </div>
+    <div class="form-group">
+      <label for="cfgSocksListen">SOCKS5 Listen Address</label>
+      <input type="text" id="cfgSocksListen" placeholder="0.0.0.0:1080">
+      <span style="font-size: 0.7rem; color: var(--text-muted);">Use 0.0.0.0:1080 to share with all LAN devices.</span>
+    </div>
+    <div class="form-group">
+      <label for="cfgWebPassword">Web Dashboard Password</label>
+      <input type="password" id="cfgWebPassword" placeholder="Leave empty for no password">
+    </div>
+    <div class="form-group" style="flex-direction: row; align-items: center; gap: 10px;">
+      <input type="checkbox" id="cfgAutoConnect" style="width: auto;">
+      <label for="cfgAutoConnect" style="cursor: pointer;">Auto-connect VPN on system boot</label>
+    </div>
+    <button class="btn" onclick="saveSettings()">Save Settings</button>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+  let currentStatus = {};
+  let allServers = [];
+  let pollTimer = null;
+
+  function showToast(msg) {
+    const t = document.getElementById('toast');
+    t.innerText = msg;
+    t.style.display = 'block';
+    setTimeout(() => { t.style.display = 'none'; }, 3000);
+  }
+
+  function formatBytes(bytes) {
+    if (!bytes || bytes <= 0) return '0.00 GB';
+    const gb = bytes / (1024 * 1024 * 1024);
+    return gb.toFixed(2) + ' GB';
+  }
+
+  async function fetchStatus() {
+    try {
+      const res = await fetch('/api/status');
+      if (res.status === 401) {
+        promptAuth();
+        return;
+      }
+      currentStatus = await res.json();
+      renderStatus(currentStatus);
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  function renderStatus(s) {
+    const badge = document.getElementById('statusBadge');
+    const badgeText = document.getElementById('statusText');
+    const powerBtn = document.getElementById('powerBtn');
+    const powerBtnText = document.getElementById('powerBtnText');
+
+    badge.className = 'status-badge status-' + s.state;
+    badgeText.innerText = s.state.charAt(0).toUpperCase() + s.state.slice(1);
+
+    if (s.state === 'connected') {
+      powerBtn.className = 'power-btn active';
+      powerBtnText.innerText = 'Disconnect';
+    } else if (s.state === 'connecting') {
+      powerBtn.className = 'power-btn connecting';
+      powerBtnText.innerText = 'Connecting...';
+    } else {
+      powerBtn.className = 'power-btn';
+      powerBtnText.innerText = 'Connect';
+    }
+
+    document.getElementById('pillLocation').innerText = s.active_country ? `${s.active_country} (${s.active_city})` : 'Auto';
+    document.getElementById('pillLatency').innerText = s.latency_ms > 0 ? `${s.latency_ms} ms` : '-- ms';
+    document.getElementById('pillExitIP').innerText = s.exit_ip ? `${s.exit_ip} (${s.exit_country})` : '--';
+    document.getElementById('pillServer').innerText = s.active_server || '--';
+
+    // Quota
+    const totalBytes = s.quota_max || (50 * 1024 * 1024 * 1024);
+    const leftBytes = s.quota_left !== undefined ? s.quota_left : totalBytes;
+    const usedBytes = Math.max(0, totalBytes - leftBytes);
+    const pct = Math.min(100, Math.max(0, (usedBytes / totalBytes) * 100));
+
+    document.getElementById('quotaUsedText').innerText = `${formatBytes(usedBytes)} Used`;
+    document.getElementById('quotaTotalText').innerText = `${formatBytes(totalBytes)} Total`;
+    document.getElementById('quotaLeftText').innerText = `Remaining: ${formatBytes(leftBytes)}`;
+    document.getElementById('quotaProgress').style.width = pct.toFixed(1) + '%';
+    if (s.quota_reset) {
+      document.getElementById('quotaResetText').innerText = `Resets: ${s.quota_reset}`;
+    }
+
+    // Proxy endpoint
+    const host = window.location.hostname || '192.168.1.1';
+    let port = '1080';
+    if (s.socks_listen && s.socks_listen.includes(':')) {
+      port = s.socks_listen.split(':')[1];
+    }
+    document.getElementById('socksProxyAddr').innerText = `socks5://${host}:${port}`;
+    document.querySelectorAll('.socks-host-ip').forEach(el => el.innerText = host);
+
+    // Auth box
+    if (s.logged_in) {
+      document.getElementById('authLoggedOut').style.display = 'none';
+      document.getElementById('authLoggedIn').style.display = 'flex';
+      document.getElementById('accountEmail').innerText = s.email;
+    } else {
+      document.getElementById('authLoggedOut').style.display = 'flex';
+      document.getElementById('authLoggedIn').style.display = 'none';
+    }
+  }
+
+  async function toggleConnect() {
+    if (currentStatus.state === 'connected') {
+      try {
+        await fetch('/api/disconnect', { method: 'POST' });
+        showToast('Disconnecting...');
+        fetchStatus();
+      } catch (e) {
+        showToast('Disconnect failed: ' + e);
+      }
+    } else {
+      const mode = document.getElementById('serverModeSelect').value;
+      const country = mode === 'manual' ? document.getElementById('countrySelect').value : '';
+      const server = mode === 'manual' ? document.getElementById('serverSelect').value : '';
+      try {
+        const res = await fetch('/api/connect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ country, server })
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast('Connecting...');
+        } else {
+          showToast('Error: ' + data.error);
+        }
+        fetchStatus();
+      } catch (e) {
+        showToast('Connect failed: ' + e);
+      }
+    }
+  }
+
+  async function loadServers() {
+    try {
+      const res = await fetch('/api/servers');
+      allServers = await res.json();
+      populateCountries(allServers);
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  function populateCountries(servers) {
+    const countryMap = new Map();
+    servers.forEach(s => {
+      if (!countryMap.has(s.country_code)) {
+        countryMap.set(s.country_code, s.country_name);
+      }
+    });
+
+    const sel = document.getElementById('countrySelect');
+    sel.innerHTML = '<option value="">Select country...</option>';
+    Array.from(countryMap.entries()).sort((a,b) => a[1].localeCompare(b[1])).forEach(([code, name]) => {
+      const opt = document.createElement('option');
+      opt.value = code;
+      opt.innerText = `${name} (${code})`;
+      sel.appendChild(opt);
+    });
+  }
+
+  function onCountryChange() {
+    const code = document.getElementById('countrySelect').value;
+    const sel = document.getElementById('serverSelect');
+    sel.innerHTML = '<option value="">Auto in country</option>';
+    if (!code) return;
+
+    allServers.filter(s => s.country_code === code).forEach(s => {
+      const opt = document.createElement('option');
+      opt.value = s.addr;
+      opt.innerText = `${s.city_name} - ${s.addr}`;
+      sel.appendChild(opt);
+    });
+  }
+
+  function onModeChange() {
+    const mode = document.getElementById('serverModeSelect').value;
+    const container = document.getElementById('manualServerContainer');
+    container.style.display = mode === 'manual' ? 'flex' : 'none';
+  }
+
+  async function doLogin() {
+    const email = document.getElementById('loginEmail').value.trim();
+    const password = document.getElementById('loginPassword').value;
+    if (!email || !password) {
+      showToast('Enter email and password');
+      return;
+    }
+    const btn = document.getElementById('loginBtn');
+    btn.disabled = true;
+    btn.innerText = 'Signing in...';
+
+    try {
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast('Signed in successfully!');
+        document.getElementById('loginPassword').value = '';
+        fetchStatus();
+      } else {
+        showToast('Sign in failed: ' + (data.error || 'Unknown error'));
+      }
+    } catch (e) {
+      showToast('Sign in error: ' + e);
+    } finally {
+      btn.disabled = false;
+      btn.innerText = 'Sign In';
+    }
+  }
+
+  async function doLogout() {
+    try {
+      await fetch('/api/logout', { method: 'POST' });
+      showToast('Signed out');
+      fetchStatus();
+    } catch (e) {
+      showToast('Logout error: ' + e);
+    }
+  }
+
+  async function refreshLogs() {
+    try {
+      const res = await fetch('/api/logs');
+      const logs = await res.json();
+      const consoleEl = document.getElementById('logsConsole');
+      consoleEl.innerHTML = logs.map(l =>
+        `<div class="log-line"><span class="log-time">[${l.timestamp}]</span>${escapeHtml(l.message)}</div>`
+      ).join('');
+      consoleEl.scrollTop = consoleEl.scrollHeight;
+    } catch (e) {}
+  }
+
+  function escapeHtml(str) {
+    return str.replace(/[&<>'"]/g, tag => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+    }[tag] || tag));
+  }
+
+  function copyProxyAddr() {
+    const text = document.getElementById('socksProxyAddr').innerText;
+    navigator.clipboard.writeText(text).then(() => {
+      showToast('Proxy address copied!');
+    });
+  }
+
+  function openSettingsModal() {
+    fetch('/api/config').then(r => r.json()).then(cfg => {
+      document.getElementById('cfgSocksListen').value = cfg.socks_listen || '0.0.0.0:1080';
+      document.getElementById('cfgAutoConnect').checked = !!cfg.auto_connect;
+      document.getElementById('settingsModal').style.display = 'flex';
+    });
+  }
+
+  function closeSettingsModal() {
+    document.getElementById('settingsModal').style.display = 'none';
+  }
+
+  async function saveSettings() {
+    const socksListen = document.getElementById('cfgSocksListen').value.trim();
+    const webPassword = document.getElementById('cfgWebPassword').value;
+    const autoConnect = document.getElementById('cfgAutoConnect').checked;
+
+    const payload = {
+      socks_listen: socksListen,
+      auto_connect: autoConnect
+    };
+    if (webPassword) {
+      payload.web_password = webPassword;
+    }
+
+    try {
+      const res = await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast('Settings saved successfully!');
+        closeSettingsModal();
+        fetchStatus();
+      } else {
+        showToast('Failed to save settings: ' + data.error);
+      }
+    } catch (e) {
+      showToast('Save error: ' + e);
+    }
+  }
+
+  function promptAuth() {
+    const pwd = prompt('Enter Web Dashboard Password:');
+    if (pwd) {
+      fetch('/api/auth/login', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({password: pwd})
+      }).then(r => r.json()).then(d => {
+        if (d.success) {
+          fetchStatus();
+        } else {
+          alert('Wrong password');
+        }
+      });
+    }
+  }
+
+  // Init
+  fetchStatus();
+  loadServers();
+  refreshLogs();
+  pollTimer = setInterval(() => {
+    fetchStatus();
+    refreshLogs();
+  }, 3000);
+</script>
+</body>
+</html>

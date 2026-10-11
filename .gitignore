@@ -1,0 +1,6 @@
+dist/
+/foxyvpn
+*.log
+*.tmp
+*.state
+.DS_Store

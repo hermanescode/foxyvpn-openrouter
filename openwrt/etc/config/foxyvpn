@@ -1,0 +1,6 @@
+config foxyvpn 'main'
+	option enabled '1'
+	option web_listen ':8080'
+	option socks_listen '0.0.0.0:1080'
+	option auto_connect '1'
+	option mode 'auto'
