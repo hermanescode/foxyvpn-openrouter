@@ -55,6 +55,9 @@ type SocksServer struct {
 	listener       net.Listener
 	udpListener    *net.UDPConn
 	dohResolver    *DohResolver
+	connSlots      chan struct{}
+	unreachable    map[string]time.Time
+	unreachMu      sync.RWMutex
 	mu             sync.Mutex
 	closed         bool
 	onLog          func(string)
@@ -63,14 +66,44 @@ type SocksServer struct {
 
 func NewSocksServer(listenAddr string, opener TunnelOpener, onLog func(string), onTokenExpired ...func()) *SocksServer {
 	s := &SocksServer{
-		listenAddr: listenAddr,
-		opener:     opener,
-		onLog:      onLog,
+		listenAddr:  listenAddr,
+		opener:      opener,
+		onLog:       onLog,
+		connSlots:   make(chan struct{}, 128),
+		unreachable: make(map[string]time.Time),
 	}
 	if len(onTokenExpired) > 0 {
 		s.onTokenExpired = onTokenExpired[0]
 	}
 	return s
+}
+
+func (s *SocksServer) isUnreachable(target string) bool {
+	s.unreachMu.RLock()
+	exp, ok := s.unreachable[target]
+	s.unreachMu.RUnlock()
+	if !ok {
+		return false
+	}
+	if time.Now().Before(exp) {
+		return true
+	}
+	s.unreachMu.Lock()
+	delete(s.unreachable, target)
+	s.unreachMu.Unlock()
+	return false
+}
+
+func (s *SocksServer) rememberUnreachable(target string) {
+	s.unreachMu.Lock()
+	s.unreachable[target] = time.Now().Add(30 * time.Second)
+	s.unreachMu.Unlock()
+}
+
+func (s *SocksServer) forgetUnreachable(target string) {
+	s.unreachMu.Lock()
+	delete(s.unreachable, target)
+	s.unreachMu.Unlock()
 }
 
 func (s *SocksServer) log(msg string) {
@@ -236,6 +269,13 @@ func (s *SocksServer) acceptLoop(ln net.Listener) {
 func (s *SocksServer) handleClient(conn net.Conn) {
 	defer conn.Close()
 
+	select {
+	case s.connSlots <- struct{}{}:
+		defer func() { <-s.connSlots }()
+	default:
+		return
+	}
+
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 	br := bufio.NewReader(conn)
 	firstByte, err := br.Peek(1)
@@ -284,6 +324,12 @@ func (s *SocksServer) handleSocks5(conn net.Conn) {
 		_ = writeSOCKSReply(conn, socksReplyFailure, nil)
 		return
 	}
+
+	if s.isUnreachable(target) {
+		_ = writeSOCKSReply(conn, socksReplyHostUnrch, nil)
+		return
+	}
+
 	isIP := net.ParseIP(host) != nil
 
 	// If destination is an IP and port is 443 (HTTPS) or 80 (HTTP),
@@ -316,11 +362,16 @@ func (s *SocksServer) handleSocks5(conn net.Conn) {
 			s.log(fmt.Sprintf("[SOCKS5] Sniffed domain %s (from IP %s) -> Routing to %s", sniffedDomain, target, actualTarget))
 		}
 
+		if s.isUnreachable(actualTarget) {
+			return
+		}
+
 		upstream, err := opener.OpenTunnel(actualTarget)
 		if err != nil && sniffedDomain != "" {
 			upstream, err = opener.OpenTunnel(target)
 		}
 		if err != nil {
+			s.rememberUnreachable(actualTarget)
 			if strings.Contains(err.Error(), "401") || strings.Contains(err.Error(), "token expired") {
 				if s.onTokenExpired != nil {
 					go s.onTokenExpired()
@@ -329,6 +380,7 @@ func (s *SocksServer) handleSocks5(conn net.Conn) {
 			s.log(fmt.Sprintf("[SOCKS5] Connect to %s failed: %v", actualTarget, err))
 			return
 		}
+		s.forgetUnreachable(actualTarget)
 		defer upstream.Close()
 
 		if _, err := upstream.Write(initialData); err != nil {
@@ -342,6 +394,7 @@ func (s *SocksServer) handleSocks5(conn net.Conn) {
 	// Standard connect for named domains or other ports
 	upstream, err := opener.OpenTunnel(target)
 	if err != nil {
+		s.rememberUnreachable(target)
 		if strings.Contains(err.Error(), "401") || strings.Contains(err.Error(), "token expired") {
 			if s.onTokenExpired != nil {
 				go s.onTokenExpired()
@@ -351,6 +404,7 @@ func (s *SocksServer) handleSocks5(conn net.Conn) {
 		_ = writeSOCKSReply(conn, socksReplyHostUnrch, nil)
 		return
 	}
+	s.forgetUnreachable(target)
 	defer upstream.Close()
 
 	if err := writeSOCKSReply(conn, socksReplySuccess, conn.LocalAddr()); err != nil {
@@ -384,6 +438,14 @@ func (s *SocksServer) handleHttpProxy(conn net.Conn, br *bufio.Reader) {
 		}
 
 		host, port, _ := net.SplitHostPort(target)
+		if !isAllowedWebPort(port) {
+			_, _ = conn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"))
+			return
+		}
+		if s.isUnreachable(target) {
+			_, _ = conn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"))
+			return
+		}
 		isIP := net.ParseIP(host) != nil
 
 		_, err = conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
@@ -409,14 +471,20 @@ func (s *SocksServer) handleHttpProxy(conn net.Conn, br *bufio.Reader) {
 				s.log(fmt.Sprintf("[HTTP-Proxy] Sniffed domain %s (from IP %s) -> Routing to %s", sniffedDomain, target, actualTarget))
 			}
 
+			if s.isUnreachable(actualTarget) {
+				return
+			}
+
 			upstream, err := opener.OpenTunnel(actualTarget)
 			if err != nil && sniffedDomain != "" {
 				upstream, err = opener.OpenTunnel(target)
 			}
 			if err != nil {
+				s.rememberUnreachable(actualTarget)
 				s.log(fmt.Sprintf("[HTTP-Proxy] Connect to %s failed: %v", actualTarget, err))
 				return
 			}
+			s.forgetUnreachable(actualTarget)
 			defer upstream.Close()
 
 			if _, err := upstream.Write(initialData); err != nil {
@@ -429,9 +497,11 @@ func (s *SocksServer) handleHttpProxy(conn net.Conn, br *bufio.Reader) {
 
 		upstream, err := opener.OpenTunnel(target)
 		if err != nil {
+			s.rememberUnreachable(target)
 			s.log(fmt.Sprintf("[HTTP-Proxy] Connect to %s failed: %v", target, err))
 			return
 		}
+		s.forgetUnreachable(target)
 		defer upstream.Close()
 
 		relayBidirectional(conn, upstream)

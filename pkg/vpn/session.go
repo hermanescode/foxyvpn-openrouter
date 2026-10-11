@@ -125,7 +125,11 @@ func (s *H2ProxySession) IsAlive() bool {
 
 func (s *H2ProxySession) OpenTunnel(authority string) (net.Conn, error) {
 	reqBody := newTunnelWriteBuffer(defaultTunnelWriteBufSize)
-	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
+	timeout := s.timeout
+	if timeout > 8*time.Second {
+		timeout = 8 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodConnect, "http://"+authority, reqBody)
 	if err != nil {
