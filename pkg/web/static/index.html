@@ -622,6 +622,9 @@
           </select>
         </div>
       </div>
+      <button id="applyServerBtn" class="btn" style="margin-top: 4px;" onclick="applyServerSelection()">
+        💾 Save & Switch Location
+      </button>
     </div>
 
     <!-- Firefox Account Card -->
@@ -888,6 +891,7 @@
       const res = await fetch('/api/servers');
       allServers = await res.json();
       populateCountries(allServers);
+      await loadConfigIntoUI();
     } catch (e) {
       console.error(e);
     }
@@ -929,6 +933,66 @@
     const mode = document.getElementById('serverModeSelect').value;
     const container = document.getElementById('manualServerContainer');
     container.style.display = mode === 'manual' ? 'flex' : 'none';
+  }
+
+  async function applyServerSelection() {
+    const mode = document.getElementById('serverModeSelect').value;
+    const country = mode === 'manual' ? document.getElementById('countrySelect').value : '';
+    const server = mode === 'manual' ? document.getElementById('serverSelect').value : '';
+    const btn = document.getElementById('applyServerBtn');
+    btn.disabled = true;
+    btn.innerText = 'Applying...';
+
+    try {
+      // 1. Save config to router
+      await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode: mode,
+          selected_country: country,
+          selected_server: server
+        })
+      });
+
+      // 2. If currently connected, reconnect to the new location
+      if (currentStatus.state === 'connected') {
+        showToast('Switching location...');
+        await fetch('/api/disconnect', { method: 'POST' });
+        await new Promise(r => setTimeout(r, 600));
+        await fetch('/api/connect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ country, server })
+        });
+      } else {
+        showToast('Location settings saved!');
+      }
+      fetchStatus();
+    } catch (e) {
+      showToast('Error applying location: ' + e);
+    } finally {
+      btn.disabled = false;
+      btn.innerText = '💾 Save & Switch Location';
+    }
+  }
+
+  async function loadConfigIntoUI() {
+    try {
+      const res = await fetch('/api/config');
+      const cfg = await res.json();
+      if (cfg.mode) {
+        document.getElementById('serverModeSelect').value = cfg.mode;
+        onModeChange();
+      }
+      if (cfg.selected_country) {
+        document.getElementById('countrySelect').value = cfg.selected_country;
+        onCountryChange();
+      }
+      if (cfg.selected_server) {
+        document.getElementById('serverSelect').value = cfg.selected_server;
+      }
+    } catch (e) {}
   }
 
   async function doLogin() {
