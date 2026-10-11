@@ -93,6 +93,7 @@ start_service() {
 
     procd_open_instance
     procd_set_param command "$PROG" -config "$CONF"
+    procd_set_param env GOMEMLIMIT="32MiB" GOGC="30"
     procd_set_param respawn 3600 5 0
     procd_set_param stdout 1
     procd_set_param stderr 1

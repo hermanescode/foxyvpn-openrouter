@@ -6,14 +6,30 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
+	"time"
 
 	"github.com/hermanescode/foxyvpn-openrouter/pkg/config"
 	"github.com/hermanescode/foxyvpn-openrouter/pkg/vpn"
 	"github.com/hermanescode/foxyvpn-openrouter/pkg/web"
 )
 
-const version = "1.0.0"
+const version = "1.1.3"
+
+func init() {
+	// Aggressive memory control for embedded router (Google Wifi AC1304)
+	debug.SetMemoryLimit(32 * 1024 * 1024) // 32 MB soft heap cap for GC
+	debug.SetGCPercent(30)                 // Trigger GC when heap grows by 30%
+
+	// Periodically return idle memory back to the Linux OS
+	go func() {
+		ticker := time.NewTicker(25 * time.Second)
+		for range ticker.C {
+			debug.FreeOSMemory()
+		}
+	}()
+}
 
 func main() {
 	configPathFlag := flag.String("config", "", "Path to config file (default: /etc/foxyvpn/config.json or ./config.json)")

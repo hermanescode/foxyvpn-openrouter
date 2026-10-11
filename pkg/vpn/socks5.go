@@ -69,7 +69,7 @@ func NewSocksServer(listenAddr string, opener TunnelOpener, onLog func(string), 
 		listenAddr:  listenAddr,
 		opener:      opener,
 		onLog:       onLog,
-		connSlots:   make(chan struct{}, 128),
+		connSlots:   make(chan struct{}, 64),
 		unreachable: make(map[string]time.Time),
 	}
 	if len(onTokenExpired) > 0 {
