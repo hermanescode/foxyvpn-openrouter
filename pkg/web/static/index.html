@@ -962,18 +962,44 @@
     }[tag] || tag));
   }
 
+  function copyTextRobust(text, successMsg) {
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(() => {
+        showToast(successMsg);
+      }).catch(() => {
+        fallbackCopy(text, successMsg);
+      });
+    } else {
+      fallbackCopy(text, successMsg);
+    }
+  }
+
+  function fallbackCopy(text, successMsg) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-999999px';
+    ta.style.top = '-999999px';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    try {
+      document.execCommand('copy');
+      showToast(successMsg);
+    } catch (e) {
+      showToast('Copy failed: ' + e);
+    }
+    document.body.removeChild(ta);
+  }
+
   function copyProxyAddr() {
     const text = document.getElementById('socksProxyAddr').innerText;
-    navigator.clipboard.writeText(text).then(() => {
-      showToast('SOCKS5 proxy address copied!');
-    });
+    copyTextRobust(text, 'SOCKS5 proxy address copied!');
   }
 
   function copyHttpProxyAddr() {
     const text = document.getElementById('httpProxyAddr').innerText;
-    navigator.clipboard.writeText(text).then(() => {
-      showToast('HTTP proxy address copied!');
-    });
+    copyTextRobust(text, 'HTTP proxy address copied!');
   }
 
   function openSettingsModal() {
@@ -1042,8 +1068,7 @@
       const res = await fetch('/api/logs');
       const logs = await res.json();
       const text = logs.map(l => `[${l.timestamp}] ${l.message}`).join('\n');
-      await navigator.clipboard.writeText(text);
-      showToast('All logs copied to clipboard!');
+      copyTextRobust(text, 'All logs copied to clipboard!');
     } catch (e) {
       showToast('Copy logs error: ' + e);
     }
