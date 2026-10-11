@@ -97,17 +97,23 @@ func (s *H2ProxySession) runKeepAlive(ctx context.Context) {
 	ticker := time.NewTicker(upstreamKeepAliveInterval)
 	defer ticker.Stop()
 
+	failures := 0
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			pingCtx, cancel := context.WithTimeout(ctx, upstreamKeepAlivePingTimeout)
+			pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			err := s.cc.Ping(pingCtx)
 			cancel()
 			if err != nil {
-				s.alive.Store(false)
-				return
+				failures++
+				if failures >= 3 {
+					s.alive.Store(false)
+					return
+				}
+			} else {
+				failures = 0
 			}
 		}
 	}

@@ -50,22 +50,27 @@ func (c *bufferedConn) Read(p []byte) (int, error) {
 }
 
 type SocksServer struct {
-	listenAddr  string
-	opener      TunnelOpener
-	listener    net.Listener
-	udpListener *net.UDPConn
-	dohResolver *DohResolver
-	mu          sync.Mutex
-	closed      bool
-	onLog       func(string)
+	listenAddr     string
+	opener         TunnelOpener
+	listener       net.Listener
+	udpListener    *net.UDPConn
+	dohResolver    *DohResolver
+	mu             sync.Mutex
+	closed         bool
+	onLog          func(string)
+	onTokenExpired func()
 }
 
-func NewSocksServer(listenAddr string, opener TunnelOpener, onLog func(string)) *SocksServer {
-	return &SocksServer{
+func NewSocksServer(listenAddr string, opener TunnelOpener, onLog func(string), onTokenExpired ...func()) *SocksServer {
+	s := &SocksServer{
 		listenAddr: listenAddr,
 		opener:     opener,
 		onLog:      onLog,
 	}
+	if len(onTokenExpired) > 0 {
+		s.onTokenExpired = onTokenExpired[0]
+	}
+	return s
 }
 
 func (s *SocksServer) log(msg string) {
@@ -274,6 +279,11 @@ func (s *SocksServer) handleSocks5(conn net.Conn) {
 	}
 
 	host, port, _ := net.SplitHostPort(target)
+	if !isAllowedWebPort(port) {
+		// Fastly CDN only permits standard web ports (80, 443, etc.)
+		_ = writeSOCKSReply(conn, socksReplyFailure, nil)
+		return
+	}
 	isIP := net.ParseIP(host) != nil
 
 	// If destination is an IP and port is 443 (HTTPS) or 80 (HTTP),
@@ -311,6 +321,11 @@ func (s *SocksServer) handleSocks5(conn net.Conn) {
 			upstream, err = opener.OpenTunnel(target)
 		}
 		if err != nil {
+			if strings.Contains(err.Error(), "401") || strings.Contains(err.Error(), "token expired") {
+				if s.onTokenExpired != nil {
+					go s.onTokenExpired()
+				}
+			}
 			s.log(fmt.Sprintf("[SOCKS5] Connect to %s failed: %v", actualTarget, err))
 			return
 		}
@@ -327,6 +342,11 @@ func (s *SocksServer) handleSocks5(conn net.Conn) {
 	// Standard connect for named domains or other ports
 	upstream, err := opener.OpenTunnel(target)
 	if err != nil {
+		if strings.Contains(err.Error(), "401") || strings.Contains(err.Error(), "token expired") {
+			if s.onTokenExpired != nil {
+				go s.onTokenExpired()
+			}
+		}
 		s.log(fmt.Sprintf("[SOCKS5] Connect to %s failed: %v", target, err))
 		_ = writeSOCKSReply(conn, socksReplyHostUnrch, nil)
 		return
@@ -641,6 +661,10 @@ func writeSOCKSReply(w io.Writer, rep byte, addr net.Addr) error {
 	reply = append(reply, byte(port>>8), byte(port))
 	_, err := w.Write(reply)
 	return err
+}
+
+func isAllowedWebPort(port string) bool {
+	return port == "80" || port == "443" || port == "8080" || port == "8443" || port == "2499"
 }
 
 func relayBidirectional(c1, c2 net.Conn) {

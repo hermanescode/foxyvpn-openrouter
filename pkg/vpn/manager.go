@@ -75,9 +75,10 @@ type VPNManager struct {
 	quotaMax     int64
 	quotaLeft    int64
 	quotaReset   string
-	connectedAt  time.Time
-	failureCount int
-	logs         []LogEntry
+	connectedAt   time.Time
+	passExpiresAt time.Time
+	failureCount  int
+	logs          []LogEntry
 	logsMu       sync.Mutex
 	mu           sync.RWMutex
 	stopChan     chan struct{}
@@ -92,6 +93,8 @@ func NewVPNManager(cfg *config.Config) *VPNManager {
 	}
 	m.socksServer = NewSocksServer(cfg.SocksListen, nil, func(msg string) {
 		m.AddLog(msg)
+	}, func() {
+		_ = m.renewProxyPass()
 	})
 	return m
 }
@@ -404,16 +407,17 @@ func (m *VPNManager) doConnect(country, serverAddr string) error {
 		}
 	}
 
-	// Update quota info
+	// Update quota & expiration info
+	m.mu.Lock()
+	m.passExpiresAt = pass.ExpiresAt()
 	if pass.QuotaMax != "" {
 		maxBytes, _ := strconv.ParseInt(pass.QuotaMax, 10, 64)
 		leftBytes, _ := strconv.ParseInt(pass.QuotaLeft, 10, 64)
-		m.mu.Lock()
 		m.quotaMax = maxBytes
 		m.quotaLeft = leftBytes
 		m.quotaReset = pass.QuotaReset
-		m.mu.Unlock()
 	}
+	m.mu.Unlock()
 
 	// 3. Resolve edge server
 	targetServer, err := m.resolveServer(country, serverAddr)
@@ -639,8 +643,69 @@ func (m *VPNManager) supervisorLoop() {
 			return
 		case <-ticker.C:
 			m.checkHealthAndReconnect()
+			m.checkProxyPassRenewal()
 		}
 	}
+}
+
+func (m *VPNManager) checkProxyPassRenewal() {
+	m.mu.RLock()
+	state := m.state
+	exp := m.passExpiresAt
+	session := m.h2Session
+	m.mu.RUnlock()
+
+	if state != "connected" || session == nil || exp.IsZero() {
+		return
+	}
+
+	if time.Until(exp) < 5*time.Minute {
+		m.AddLog(fmt.Sprintf("Proxy pass token expires in %s. Renewing in background...", time.Until(exp).Round(time.Second)))
+		_ = m.renewProxyPass()
+	}
+}
+
+func (m *VPNManager) renewProxyPass() error {
+	m.mu.RLock()
+	session := m.h2Session
+	accessToken := m.cfg.AccessToken
+	guardian := m.cfg.GuardianEndpoint
+	if guardian == "" {
+		guardian = core.GuardianEndpointDefault
+	}
+	m.mu.RUnlock()
+
+	if session == nil {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	pass, err := core.FetchProxyPass(ctx, guardian, accessToken)
+	cancel()
+	if err != nil {
+		refCtx, refCancel := context.WithTimeout(context.Background(), 20*time.Second)
+		tokenResp, refErr := core.FxaRefreshToken(refCtx, m.cfg.RefreshToken)
+		refCancel()
+		if refErr == nil {
+			_ = m.cfg.SetTokens(m.cfg.Email, tokenResp.AccessToken, tokenResp.RefreshToken, tokenResp.ExpiresIn)
+			accessToken = tokenResp.AccessToken
+			retryCtx, retryCancel := context.WithTimeout(context.Background(), 20*time.Second)
+			pass, err = core.FetchProxyPass(retryCtx, guardian, accessToken)
+			retryCancel()
+		}
+	}
+
+	if err != nil {
+		m.AddLog(fmt.Sprintf("Background proxy pass renewal failed: %v", err))
+		return err
+	}
+
+	session.UpdateToken(pass.RawToken)
+	m.mu.Lock()
+	m.passExpiresAt = pass.ExpiresAt()
+	m.mu.Unlock()
+	m.AddLog(fmt.Sprintf("Proxy pass token renewed. Valid until %s", pass.ExpiresAt().Format("15:04:05")))
+	return nil
 }
 
 func (m *VPNManager) checkHealthAndReconnect() {
