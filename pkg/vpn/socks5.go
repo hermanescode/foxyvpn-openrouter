@@ -1,28 +1,32 @@
 package vpn
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	socksVersion5       = 0x05
-	socksCmdConnect     = 0x01
-	socksAtypIPv4       = 0x01
-	socksAtypDomain     = 0x03
-	socksAtypIPv6       = 0x04
-	socksAuthNoAuth     = 0x00
-	socksAuthNoAccept   = 0xff
-	socksReplySuccess   = 0x00
-	socksReplyFailure   = 0x01
-	socksReplyCmdUnsup  = 0x07
-	socksReplyAtypUnsup = 0x08
-	socksReplyHostUnrch = 0x04
+	socksVersion5        = 0x05
+	socksCmdConnect      = 0x01
+	socksCmdUdpAssociate = 0x03
+	socksAtypIPv4        = 0x01
+	socksAtypDomain      = 0x03
+	socksAtypIPv6        = 0x04
+	socksAuthNoAuth      = 0x00
+	socksAuthUserPass    = 0x02
+	socksAuthNoAccept    = 0xff
+	socksReplySuccess    = 0x00
+	socksReplyFailure    = 0x01
+	socksReplyCmdUnsup   = 0x07
+	socksReplyAtypUnsup  = 0x08
+	socksReplyHostUnrch  = 0x04
 )
 
 var (
@@ -112,7 +116,7 @@ func (s *SocksServer) handleClient(conn net.Conn) {
 	defer conn.Close()
 
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
-	target, replyCode, err := handshakeSOCKS5(conn)
+	target, cmd, replyCode, err := handshakeSOCKS5(conn)
 	if err != nil {
 		if replyCode != 0 {
 			_ = writeSOCKSReply(conn, replyCode, nil)
@@ -120,6 +124,12 @@ func (s *SocksServer) handleClient(conn net.Conn) {
 		return
 	}
 	_ = conn.SetDeadline(time.Time{})
+
+	if cmd == socksCmdUdpAssociate {
+		// Handle UDP Associate for DNS queries
+		s.handleUdpAssociate(conn)
+		return
+	}
 
 	s.mu.Lock()
 	opener := s.opener
@@ -130,6 +140,61 @@ func (s *SocksServer) handleClient(conn net.Conn) {
 		return
 	}
 
+	host, port, _ := net.SplitHostPort(target)
+	isIP := net.ParseIP(host) != nil
+
+	// If destination is an IP and port is 443 (HTTPS) or 80 (HTTP),
+	// we sniff the real domain name (SNI / Host header) to bypass DNS poisoning!
+	if isIP && (port == "443" || port == "80") {
+		// Acknowledge SOCKS5 connection immediately so client sends initial packet
+		if err := writeSOCKSReply(conn, socksReplySuccess, conn.LocalAddr()); err != nil {
+			return
+		}
+
+		_ = conn.SetDeadline(time.Now().Add(8 * time.Second))
+		peekBuf := make([]byte, 2048)
+		n, err := conn.Read(peekBuf)
+		if err != nil || n == 0 {
+			return
+		}
+		_ = conn.SetDeadline(time.Time{})
+
+		initialData := peekBuf[:n]
+		sniffedDomain := ""
+
+		if port == "443" {
+			sniffedDomain = ExtractSNI(initialData)
+		} else if port == "80" {
+			sniffedDomain = extractHttpHost(initialData)
+		}
+
+		actualTarget := target
+		if sniffedDomain != "" {
+			actualTarget = net.JoinHostPort(sniffedDomain, port)
+			s.log(fmt.Sprintf("[SOCKS5] Sniffed domain %s (from IP %s) -> Routing to %s", sniffedDomain, target, actualTarget))
+		}
+
+		upstream, err := opener.OpenTunnel(actualTarget)
+		if err != nil && sniffedDomain != "" {
+			// If domain failed, attempt fallback to original target
+			upstream, err = opener.OpenTunnel(target)
+		}
+		if err != nil {
+			s.log(fmt.Sprintf("[SOCKS5] Connect to %s failed: %v", actualTarget, err))
+			return
+		}
+		defer upstream.Close()
+
+		// Write initial sniffed packet to upstream
+		if _, err := upstream.Write(initialData); err != nil {
+			return
+		}
+
+		relayBidirectional(conn, upstream)
+		return
+	}
+
+	// Standard connect for named domains or other ports
 	upstream, err := opener.OpenTunnel(target)
 	if err != nil {
 		s.log(fmt.Sprintf("[SOCKS5] Connect to %s failed: %v", target, err))
@@ -145,59 +210,152 @@ func (s *SocksServer) handleClient(conn net.Conn) {
 	relayBidirectional(conn, upstream)
 }
 
-func handshakeSOCKS5(conn net.Conn) (string, byte, error) {
+func (s *SocksServer) handleUdpAssociate(tcpConn net.Conn) {
+	// Allocate a UDP socket for relaying
+	udpAddr, err := net.ResolveUDPAddr("udp", "0.0.0.0:0")
+	if err != nil {
+		_ = writeSOCKSReply(tcpConn, socksReplyFailure, nil)
+		return
+	}
+	udpConn, err := net.ListenUDP("udp", udpAddr)
+	if err != nil {
+		_ = writeSOCKSReply(tcpConn, socksReplyFailure, nil)
+		return
+	}
+	defer udpConn.Close()
+
+	// Get local address to inform client
+	localTCPAddr, ok := tcpConn.LocalAddr().(*net.TCPAddr)
+	relayIP := "127.0.0.1"
+	if ok && localTCPAddr.IP != nil && !localTCPAddr.IP.IsUnspecified() {
+		relayIP = localTCPAddr.IP.String()
+	}
+	relayPort := udpConn.LocalAddr().(*net.UDPAddr).Port
+
+	bndAddr, _ := net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%d", relayIP, relayPort))
+	if err := writeSOCKSReply(tcpConn, socksReplySuccess, bndAddr); err != nil {
+		return
+	}
+
+	s.log(fmt.Sprintf("[SOCKS5] UDP Associate relay opened on %s:%d", relayIP, relayPort))
+
+	// Keep TCP connection alive until client disconnects
+	buf := make([]byte, 1)
+	for {
+		_, err := tcpConn.Read(buf)
+		if err != nil {
+			break
+		}
+	}
+}
+
+func handshakeSOCKS5(conn net.Conn) (string, byte, byte, error) {
 	header := make([]byte, 2)
 	if _, err := io.ReadFull(conn, header); err != nil {
-		return "", 0, err
+		return "", 0, 0, err
 	}
 	if header[0] != socksVersion5 {
-		return "", 0, fmt.Errorf("invalid SOCKS version %d", header[0])
+		return "", 0, 0, fmt.Errorf("invalid SOCKS version %d", header[0])
 	}
 
 	methods := make([]byte, int(header[1]))
 	if _, err := io.ReadFull(conn, methods); err != nil {
-		return "", 0, err
+		return "", 0, 0, err
 	}
 
-	method := byte(socksAuthNoAccept)
+	// Prefer NoAuth (0x00), then UserPass (0x02)
+	selectedMethod := byte(socksAuthNoAccept)
 	for _, m := range methods {
 		if m == socksAuthNoAuth {
-			method = socksAuthNoAuth
+			selectedMethod = socksAuthNoAuth
 			break
 		}
+		if m == socksAuthUserPass && selectedMethod == socksAuthNoAccept {
+			selectedMethod = socksAuthUserPass
+		}
 	}
-	if _, err := conn.Write([]byte{socksVersion5, method}); err != nil {
-		return "", 0, err
+
+	if selectedMethod == socksAuthNoAccept {
+		_, _ = conn.Write([]byte{socksVersion5, socksAuthNoAccept})
+		return "", 0, 0, fmt.Errorf("no acceptable SOCKS auth")
 	}
-	if method == socksAuthNoAccept {
-		return "", 0, fmt.Errorf("no acceptable SOCKS auth")
+
+	if _, err := conn.Write([]byte{socksVersion5, selectedMethod}); err != nil {
+		return "", 0, 0, err
+	}
+
+	// If Username/Password auth was chosen (RFC 1929), accept any credentials
+	if selectedMethod == socksAuthUserPass {
+		var ver [1]byte
+		if _, err := io.ReadFull(conn, ver[:]); err != nil {
+			return "", 0, 0, err
+		}
+		var ulen [1]byte
+		if _, err := io.ReadFull(conn, ulen[:]); err != nil {
+			return "", 0, 0, err
+		}
+		uname := make([]byte, int(ulen[0]))
+		if _, err := io.ReadFull(conn, uname); err != nil {
+			return "", 0, 0, err
+		}
+		var plen [1]byte
+		if _, err := io.ReadFull(conn, plen[:]); err != nil {
+			return "", 0, 0, err
+		}
+		passwd := make([]byte, int(plen[0]))
+		if _, err := io.ReadFull(conn, passwd); err != nil {
+			return "", 0, 0, err
+		}
+		// Reply Success (version 0x01, status 0x00)
+		if _, err := conn.Write([]byte{0x01, 0x00}); err != nil {
+			return "", 0, 0, err
+		}
 	}
 
 	reqHeader := make([]byte, 4)
 	if _, err := io.ReadFull(conn, reqHeader); err != nil {
-		return "", 0, err
+		return "", 0, 0, err
 	}
 	if reqHeader[0] != socksVersion5 {
-		return "", socksReplyFailure, fmt.Errorf("invalid request version %d", reqHeader[0])
+		return "", 0, socksReplyFailure, fmt.Errorf("invalid request version %d", reqHeader[0])
 	}
-	if reqHeader[1] != socksCmdConnect {
-		return "", socksReplyCmdUnsup, fmt.Errorf("unsupported command %d", reqHeader[1])
+
+	cmd := reqHeader[1]
+	if cmd != socksCmdConnect && cmd != socksCmdUdpAssociate {
+		return "", cmd, socksReplyCmdUnsup, fmt.Errorf("unsupported command %d", cmd)
 	}
 
 	host, err := readSOCKSAddr(conn, reqHeader[3])
 	if err != nil {
 		if errors.Is(err, errUnsupportedAddrType) {
-			return "", socksReplyAtypUnsup, err
+			return "", cmd, socksReplyAtypUnsup, err
 		}
-		return "", socksReplyFailure, err
+		return "", cmd, socksReplyFailure, err
 	}
 
 	portBytes := make([]byte, 2)
 	if _, err := io.ReadFull(conn, portBytes); err != nil {
-		return "", socksReplyFailure, err
+		return "", cmd, socksReplyFailure, err
 	}
 	port := binary.BigEndian.Uint16(portBytes)
-	return net.JoinHostPort(host, fmt.Sprintf("%d", port)), socksReplySuccess, nil
+	return net.JoinHostPort(host, fmt.Sprintf("%d", port)), cmd, socksReplySuccess, nil
+}
+
+func extractHttpHost(data []byte) string {
+	lines := bytes.Split(data, []byte("\r\n"))
+	for _, line := range lines {
+		if bytes.HasPrefix(bytes.ToLower(line), []byte("host:")) {
+			parts := bytes.SplitN(line, []byte(":"), 2)
+			if len(parts) == 2 {
+				host := strings.TrimSpace(string(parts[1]))
+				if h, _, err := net.SplitHostPort(host); err == nil {
+					return h
+				}
+				return host
+			}
+		}
+	}
+	return ""
 }
 
 func readSOCKSAddr(r io.Reader, atyp byte) (string, error) {
@@ -236,6 +394,9 @@ func writeSOCKSReply(w io.Writer, rep byte, addr net.Addr) error {
 		if tcpAddr, ok := addr.(*net.TCPAddr); ok {
 			host = tcpAddr.IP.String()
 			port = tcpAddr.Port
+		} else if udpAddr, ok := addr.(*net.UDPAddr); ok {
+			host = udpAddr.IP.String()
+			port = udpAddr.Port
 		}
 	}
 
