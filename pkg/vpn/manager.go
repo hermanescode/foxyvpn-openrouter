@@ -97,6 +97,30 @@ func NewVPNManager(cfg *config.Config) *VPNManager {
 }
 
 func (m *VPNManager) AddLog(msg string) {
+	level := "info"
+	if strings.Contains(msg, "failed") || strings.Contains(msg, "Error") || strings.Contains(msg, "WARNING") {
+		level = "error"
+	} else if strings.Contains(msg, "Sniffed domain") || strings.Contains(msg, "UDP Associate") {
+		level = "debug"
+	}
+	m.AddLogLevel(level, msg)
+}
+
+func (m *VPNManager) AddLogLevel(level, msg string) {
+	m.mu.RLock()
+	cfgLevel := m.cfg.LogLevel
+	m.mu.RUnlock()
+
+	if cfgLevel == "none" {
+		return
+	}
+	if cfgLevel == "error" && level != "error" {
+		return
+	}
+	if (cfgLevel == "info" || cfgLevel == "") && level == "debug" {
+		return
+	}
+
 	m.logsMu.Lock()
 	defer m.logsMu.Unlock()
 
@@ -108,6 +132,12 @@ func (m *VPNManager) AddLog(msg string) {
 	if len(m.logs) > 300 {
 		m.logs = m.logs[len(m.logs)-300:]
 	}
+}
+
+func (m *VPNManager) ClearLogs() {
+	m.logsMu.Lock()
+	defer m.logsMu.Unlock()
+	m.logs = nil
 }
 
 func (m *VPNManager) GetLogs() []LogEntry {
@@ -665,6 +695,7 @@ func (m *VPNManager) UpdateConfig(newCfg *config.Config) error {
 	m.cfg.Mode = newCfg.Mode
 	m.cfg.SelectedCountry = newCfg.SelectedCountry
 	m.cfg.SelectedServer = newCfg.SelectedServer
+	m.cfg.LogLevel = newCfg.LogLevel
 	m.mu.Unlock()
 
 	if err := m.cfg.Save(); err != nil {

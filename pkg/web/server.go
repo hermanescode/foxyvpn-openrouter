@@ -41,17 +41,23 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/logout", s.authMiddleware(s.handleLogout))
 	mux.HandleFunc("/api/config", s.authMiddleware(s.handleConfig))
 	mux.HandleFunc("/api/logs", s.authMiddleware(s.handleLogs))
+	mux.HandleFunc("/api/logs/clear", s.authMiddleware(s.handleClearLogs))
 	mux.HandleFunc("/api/test", s.authMiddleware(s.handleTest))
 	mux.HandleFunc("/api/auth/check", s.handleAuthCheck)
 	mux.HandleFunc("/api/auth/login", s.handleWebAuthLogin)
 
-	// Static UI
+	// Static UI with no-cache headers
 	sub, err := fs.Sub(staticFS, "static")
 	if err != nil {
 		return err
 	}
 	fileServer := http.FileServer(http.FS(sub))
-	mux.Handle("/", fileServer)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
+		fileServer.ServeHTTP(w, r)
+	})
 
 	s.srv = &http.Server{
 		Addr:         s.cfg.WebListen,
@@ -259,6 +265,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			"mode":             s.cfg.Mode,
 			"selected_country": s.cfg.SelectedCountry,
 			"selected_server":  s.cfg.SelectedServer,
+			"log_level":        s.cfg.LogLevel,
 			"email":            s.cfg.Email,
 		})
 		return
@@ -272,6 +279,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			Mode            *string `json:"mode"`
 			SelectedCountry *string `json:"selected_country"`
 			SelectedServer  *string `json:"selected_server"`
+			LogLevel        *string `json:"log_level"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -297,6 +305,9 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		if req.SelectedServer != nil {
 			newCfg.SelectedServer = *req.SelectedServer
 		}
+		if req.LogLevel != nil {
+			newCfg.LogLevel = *req.LogLevel
+		}
 
 		if err := s.manager.UpdateConfig(&newCfg); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
@@ -314,6 +325,16 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	logs := s.manager.GetLogs()
 	_ = json.NewEncoder(w).Encode(logs)
+}
+
+func (s *Server) handleClearLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.manager.ClearLogs()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
 }
 
 func (s *Server) handleTest(w http.ResponseWriter, r *http.Request) {

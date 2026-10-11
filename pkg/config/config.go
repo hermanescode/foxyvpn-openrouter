@@ -25,6 +25,7 @@ type Config struct {
 	GuardianEndpoint string    `json:"guardian_endpoint"`
 	UseH3            bool      `json:"use_h3"`
 	Verbose          bool      `json:"verbose"`
+	LogLevel         string    `json:"log_level"` // "debug", "info", "error", "none"
 
 	filePath string     `json:"-"`
 	mu       sync.Mutex `json:"-"`
@@ -40,6 +41,7 @@ func DefaultConfig(filePath string) *Config {
 		GuardianEndpoint: "https://vpn.mozilla.org",
 		UseH3:            false,
 		Verbose:          false,
+		LogLevel:         "info",
 		filePath:         filePath,
 	}
 }

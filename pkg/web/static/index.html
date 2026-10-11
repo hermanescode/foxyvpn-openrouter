@@ -696,7 +696,8 @@
       </div>
       <div style="display: flex; gap: 8px;">
         <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.75rem;" onclick="copyAllLogs()">📋 Copy Logs</button>
-        <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.75rem;" onclick="refreshLogs()">Clear / Refresh</button>
+        <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.75rem;" onclick="clearAllLogs()">🗑 Clear Logs</button>
+        <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.75rem;" onclick="refreshLogs()">🔄 Refresh</button>
       </div>
     </div>
     <div id="logsConsole" class="logs-console"></div>
@@ -711,9 +712,19 @@
       <button class="close-btn" onclick="closeSettingsModal()">&times;</button>
     </div>
     <div class="form-group">
-      <label for="cfgSocksListen">SOCKS5 Listen Address</label>
+      <label for="cfgSocksListen">Proxy Listen Address (Mixed SOCKS5 + HTTP)</label>
       <input type="text" id="cfgSocksListen" placeholder="0.0.0.0:1080">
       <span style="font-size: 0.7rem; color: var(--text-muted);">Use 0.0.0.0:1080 to share with all LAN devices.</span>
+    </div>
+    <div class="form-group">
+      <label for="cfgLogLevel">Log Level</label>
+      <select id="cfgLogLevel">
+        <option value="error">Error Only (Silent / Production)</option>
+        <option value="info">Info (Standard)</option>
+        <option value="debug">Debug (Verbose with domain sniffing & UDP)</option>
+        <option value="none">None (Disabled)</option>
+      </select>
+      <span style="font-size: 0.7rem; color: var(--text-muted);">Set to "Error Only" to keep the log console clean and silent.</span>
     </div>
     <div class="form-group">
       <label for="cfgWebPassword">Web Dashboard Password</label>
@@ -1005,6 +1016,7 @@
   function openSettingsModal() {
     fetch('/api/config').then(r => r.json()).then(cfg => {
       document.getElementById('cfgSocksListen').value = cfg.socks_listen || '0.0.0.0:1080';
+      document.getElementById('cfgLogLevel').value = cfg.log_level || 'info';
       document.getElementById('cfgAutoConnect').checked = !!cfg.auto_connect;
       document.getElementById('settingsModal').style.display = 'flex';
     });
@@ -1016,11 +1028,13 @@
 
   async function saveSettings() {
     const socksListen = document.getElementById('cfgSocksListen').value.trim();
+    const logLevel = document.getElementById('cfgLogLevel').value;
     const webPassword = document.getElementById('cfgWebPassword').value;
     const autoConnect = document.getElementById('cfgAutoConnect').checked;
 
     const payload = {
       socks_listen: socksListen,
+      log_level: logLevel,
       auto_connect: autoConnect
     };
     if (webPassword) {
@@ -1043,6 +1057,19 @@
       }
     } catch (e) {
       showToast('Save error: ' + e);
+    }
+  }
+
+  async function clearAllLogs() {
+    try {
+      const res = await fetch('/api/logs/clear', { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        document.getElementById('logsConsole').innerHTML = '';
+        showToast('Logs cleared!');
+      }
+    } catch (e) {
+      showToast('Clear logs error: ' + e);
     }
   }
 
