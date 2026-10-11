@@ -43,6 +43,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/logs", s.handleLogs)
 	mux.HandleFunc("/api/logs/clear", s.handleClearLogs)
 	mux.HandleFunc("/api/test", s.handleTest)
+	mux.HandleFunc("/api/gateway/status", s.handleGatewayStatus)
+	mux.HandleFunc("/api/gateway/toggle", s.handleGatewayToggle)
 	mux.HandleFunc("/api/auth/check", s.handleAuthCheck)
 	mux.HandleFunc("/api/auth/login", s.handleWebAuthLogin)
 
@@ -372,4 +374,30 @@ func (s *Server) handleTest(w http.ResponseWriter, r *http.Request) {
 		"latency_ms": latency,
 		"message":    msg,
 	})
+}
+
+func (s *Server) handleGatewayStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	enabled := vpn.IsGatewayEnabled()
+	_ = json.NewEncoder(w).Encode(map[string]any{"enabled": enabled})
+}
+
+func (s *Server) handleGatewayToggle(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Enable bool `json:"enable"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	out, err := vpn.SetGatewayEnabled(req.Enable)
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "error": out})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "enabled": req.Enable})
 }

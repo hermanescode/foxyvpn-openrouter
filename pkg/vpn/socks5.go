@@ -325,6 +325,12 @@ func (s *SocksServer) handleSocks5(conn net.Conn) {
 		return
 	}
 
+	if isBlockedDomain(target) {
+		s.log(fmt.Sprintf("[Filter] Blocked domestic Iranian domain (%s)", target))
+		_ = writeSOCKSReply(conn, socksReplyHostUnrch, nil)
+		return
+	}
+
 	if s.isUnreachable(target) {
 		_ = writeSOCKSReply(conn, socksReplyHostUnrch, nil)
 		return
@@ -354,6 +360,11 @@ func (s *SocksServer) handleSocks5(conn net.Conn) {
 			sniffedDomain = ExtractSNI(initialData)
 		} else if port == "80" {
 			sniffedDomain = extractHttpHost(initialData)
+		}
+
+		if sniffedDomain != "" && isBlockedDomain(sniffedDomain) {
+			s.log(fmt.Sprintf("[Filter] Blocked domestic Iranian domain (%s)", sniffedDomain))
+			return
 		}
 
 		actualTarget := target
@@ -442,6 +453,11 @@ func (s *SocksServer) handleHttpProxy(conn net.Conn, br *bufio.Reader) {
 			_, _ = conn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"))
 			return
 		}
+		if isBlockedDomain(target) {
+			s.log(fmt.Sprintf("[Filter] Blocked domestic Iranian domain (%s)", target))
+			_, _ = conn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"))
+			return
+		}
 		if s.isUnreachable(target) {
 			_, _ = conn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"))
 			return
@@ -467,6 +483,10 @@ func (s *SocksServer) handleHttpProxy(conn net.Conn, br *bufio.Reader) {
 
 			actualTarget := target
 			if sniffedDomain != "" {
+				if isBlockedDomain(sniffedDomain) {
+					s.log(fmt.Sprintf("[Filter] Blocked domestic Iranian domain (%s)", sniffedDomain))
+					return
+				}
 				actualTarget = net.JoinHostPort(sniffedDomain, port)
 				s.log(fmt.Sprintf("[HTTP-Proxy] Sniffed domain %s (from IP %s) -> Routing to %s", sniffedDomain, target, actualTarget))
 			}

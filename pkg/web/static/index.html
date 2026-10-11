@@ -594,6 +594,28 @@
     </div>
   </div>
 
+  <!-- Whole-Router WiFi Gateway Mode Card -->
+  <div class="card" style="border: 1px solid rgba(255, 94, 54, 0.35); background: linear-gradient(135deg, rgba(22, 27, 34, 0.9) 0%, rgba(255, 94, 54, 0.05) 100%);">
+    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+      <div>
+        <div class="card-title" style="color: #ff7654;">
+          <span>🌐 Whole-Router WiFi Mode (حالت وی‌پی‌ان کل شبکه وای‌فای)</span>
+        </div>
+        <p style="font-size: 0.8rem; color: #c9d1d9; margin-top: 4px;">
+          بدون نیاز به پسوال (PassWall) یا نصب وی‌پی‌ان روی گوشی‌ها؛ تمام اینترنت وای‌فای و کابل‌های متصل به روتر مستقیماً آزاد می‌شود.
+        </p>
+        <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 2px;">
+          🛡 دامنه‌های داخلی ایران (<code>.ir</code>) و رنج‌های محلی به طور خودکار بای‌پس/بلاک می‌شوند تا هیچ ترافیک بیهوده‌ای ارسال نشود.
+        </p>
+      </div>
+      <div>
+        <button id="btnGatewayToggle" class="btn" style="padding: 10px 20px; font-size: 0.85rem;" onclick="toggleGatewayMode()">
+          در حال بررسی...
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- Bottom Grid: Account & Server Selector -->
   <div class="grid-2">
     <!-- Server Selector Card -->
@@ -1235,10 +1257,55 @@
     }
   }
 
+  async function checkGatewayStatus() {
+    try {
+      const res = await fetch('/api/gateway/status');
+      const data = await res.json();
+      const btn = document.getElementById('btnGatewayToggle');
+      if (btn) {
+        if (data.enabled) {
+          btn.className = 'btn btn-danger';
+          btn.innerText = '🔴 Disable Whole-Router Mode';
+        } else {
+          btn.className = 'btn';
+          btn.style.background = '#2ea043';
+          btn.innerText = '🟢 Enable Whole-Router Mode';
+        }
+      }
+    } catch (e) {}
+  }
+
+  async function toggleGatewayMode() {
+    const btn = document.getElementById('btnGatewayToggle');
+    const isEnabling = btn.innerText.includes('Enable');
+    btn.disabled = true;
+    btn.innerText = isEnabling ? 'Enabling...' : 'Disabling...';
+
+    try {
+      const res = await fetch('/api/gateway/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enable: isEnabling })
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast(isEnabling ? 'Whole-Router WiFi VPN Enabled!' : 'Whole-Router Mode Disabled!');
+      } else {
+        showToast('Error: ' + (data.error || 'Failed'));
+      }
+    } catch (e) {
+      showToast('Toggle error: ' + e);
+    } finally {
+      btn.disabled = false;
+      checkGatewayStatus();
+    }
+  }
+
   // Init
   fetchStatus();
   loadServers();
   refreshLogs();
+  checkGatewayStatus();
   pollTimer = setInterval(() => {
     fetchStatus();
     refreshLogs();

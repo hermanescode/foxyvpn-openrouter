@@ -62,10 +62,11 @@ type LogEntry struct {
 }
 
 type VPNManager struct {
-	cfg          *config.Config
-	socksServer  *SocksServer
-	h2Session    *H2ProxySession
-	countries    []core.Country
+	cfg           *config.Config
+	socksServer   *SocksServer
+	redirServer   *RedirServer
+	h2Session     *H2ProxySession
+	countries     []core.Country
 	serversList  []ServerInfo
 	serversMu    sync.RWMutex
 	state        string
@@ -133,6 +134,9 @@ func NewVPNManager(cfg *config.Config) *VPNManager {
 		m.AddLog(msg)
 	}, func() {
 		_ = m.renewProxyPass()
+	})
+	m.redirServer = NewRedirServer("0.0.0.0:1081", nil, func(msg string) {
+		m.AddLog(msg)
 	})
 	return m
 }
@@ -223,6 +227,13 @@ func (m *VPNManager) Start() error {
 		m.AddLog(fmt.Sprintf("SOCKS5 listening on %s", m.cfg.SocksListen))
 	}
 
+	// Start transparent redir listener on 1081 for router-wide WiFi VPN
+	if err := m.redirServer.Start(); err != nil {
+		m.AddLog(fmt.Sprintf("Failed to bind Redir on 0.0.0.0:1081: %v", err))
+	} else {
+		m.AddLog("Transparent proxy listening on 0.0.0.0:1081 (Router-wide WiFi VPN ready)")
+	}
+
 	// Fetch server list in background
 	go m.refreshServersList()
 
@@ -252,6 +263,7 @@ func (m *VPNManager) Stop() {
 
 	_ = m.Disconnect()
 	_ = m.socksServer.Stop()
+	_ = m.redirServer.Stop()
 }
 
 func (m *VPNManager) GetStatus() StatusInfo {
@@ -496,6 +508,7 @@ func (m *VPNManager) doConnect(country, serverAddr string) error {
 	m.activeServer = targetServer
 	m.latencyMs = latency
 	m.socksServer.UpdateOpener(h2Session)
+	m.redirServer.UpdateOpener(h2Session)
 	m.mu.Unlock()
 
 	return nil
@@ -638,6 +651,7 @@ func (m *VPNManager) Disconnect() error {
 		m.h2Session = nil
 	}
 	m.socksServer.UpdateOpener(nil)
+	m.redirServer.UpdateOpener(nil)
 	m.state = "disconnected"
 	m.exitIP = ""
 	m.exitCountry = ""
@@ -827,6 +841,8 @@ func (m *VPNManager) UpdateConfig(newCfg *config.Config) error {
 		_ = m.socksServer.Stop()
 		m.socksServer = NewSocksServer(m.cfg.SocksListen, m.h2Session, func(msg string) {
 			m.AddLog(msg)
+		}, func() {
+			_ = m.renewProxyPass()
 		})
 		_ = m.socksServer.Start()
 		m.AddLog(fmt.Sprintf("SOCKS5 re-bound to %s", m.cfg.SocksListen))
