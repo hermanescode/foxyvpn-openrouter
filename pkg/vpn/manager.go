@@ -3,6 +3,8 @@ package vpn
 import (
 	"context"
 	"crypto/tls"
+	_ "embed"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -16,6 +18,9 @@ import (
 	"github.com/hermanescode/foxyvpn-openrouter/pkg/config"
 	"github.com/hermanescode/foxyvpn-openrouter/pkg/core"
 )
+
+//go:embed default_servers.json
+var defaultServersRaw []byte
 
 type ServerInfo struct {
 	CountryName string `json:"country_name"`
@@ -124,6 +129,11 @@ func (m *VPNManager) Start() error {
 
 	m.AddLog("FoxyVPN OpenRouter service initialized")
 
+	now := time.Now()
+	if now.Year() < 2026 || (now.Year() == 2026 && now.Month() < time.October) {
+		m.AddLog(fmt.Sprintf("⚠️ WARNING: Router system clock is %s (behind real time). SSL/TLS certificates will fail until time is synced! Run: date -s '2026-10-11 12:00:00'", now.Format("2006-01-02 15:04:05")))
+	}
+
 	// Start socks server listener
 	if err := m.socksServer.Start(); err != nil {
 		m.AddLog(fmt.Sprintf("Failed to bind SOCKS5 on %s: %v", m.cfg.SocksListen, err))
@@ -208,8 +218,16 @@ func (m *VPNManager) refreshServersList() {
 
 	countries, err := core.FetchServerList(ctx)
 	if err != nil {
-		m.AddLog(fmt.Sprintf("Failed to fetch server list: %v", err))
-		return
+		m.AddLog(fmt.Sprintf("Failed to fetch live server list (%v). Loading bundled server list...", err))
+		var rawCountries []json.RawMessage
+		if unmarshalErr := json.Unmarshal(defaultServersRaw, &rawCountries); unmarshalErr == nil {
+			for _, r := range rawCountries {
+				var c core.Country
+				if json.Unmarshal(r, &c) == nil && c.Code != "" && len(c.Cities) > 0 {
+					countries = append(countries, c)
+				}
+			}
+		}
 	}
 
 	var servers []ServerInfo
