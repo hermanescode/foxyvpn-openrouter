@@ -107,9 +107,10 @@ func (m *VPNManager) AddLog(msg string) {
 }
 
 func (m *VPNManager) AddLogLevel(level, msg string) {
-	m.mu.RLock()
-	cfgLevel := m.cfg.LogLevel
-	m.mu.RUnlock()
+	cfgLevel := "info"
+	if m.cfg != nil && m.cfg.LogLevel != "" {
+		cfgLevel = m.cfg.LogLevel
+	}
 
 	if cfgLevel == "none" {
 		return
@@ -327,18 +328,25 @@ func (m *VPNManager) Connect(country, serverAddr string) error {
 	go func() {
 		err := m.doConnect(country, serverAddr)
 		m.mu.Lock()
-		defer m.mu.Unlock()
+		var countryName, serverAddr string
 		if err != nil {
 			m.state = "error"
 			m.lastError = err.Error()
 			m.failureCount++
-			m.AddLog(fmt.Sprintf("Connection failed: %v", err))
 		} else {
 			m.state = "connected"
 			m.lastError = ""
 			m.connectedAt = time.Now()
 			m.failureCount = 0
-			m.AddLog(fmt.Sprintf("Connected to %s (%s). SOCKS5 ready at %s", m.activeServer.CountryName, m.activeServer.Addr, m.cfg.SocksListen))
+			countryName = m.activeServer.CountryName
+			serverAddr = m.activeServer.Addr
+		}
+		m.mu.Unlock()
+
+		if err != nil {
+			m.AddLog(fmt.Sprintf("Connection failed: %v", err))
+		} else {
+			m.AddLog(fmt.Sprintf("Connected to %s (%s). SOCKS5 ready at %s", countryName, serverAddr, m.cfg.SocksListen))
 			go m.verifyExitProbe()
 		}
 	}()
@@ -573,8 +581,6 @@ func (m *VPNManager) verifyExitProbe() {
 
 func (m *VPNManager) Disconnect() error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	if m.h2Session != nil {
 		_ = m.h2Session.Close()
 		m.h2Session = nil
@@ -586,6 +592,8 @@ func (m *VPNManager) Disconnect() error {
 	m.latencyMs = 0
 	m.activeServer = ServerInfo{}
 	m.connectedAt = time.Time{}
+	m.mu.Unlock()
+
 	m.AddLog("VPN disconnected")
 	return nil
 }
