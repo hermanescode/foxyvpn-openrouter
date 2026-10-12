@@ -45,6 +45,11 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/test", s.handleTest)
 	mux.HandleFunc("/api/gateway/status", s.handleGatewayStatus)
 	mux.HandleFunc("/api/gateway/toggle", s.handleGatewayToggle)
+	mux.HandleFunc("/api/accounts", s.handleAccountsList)
+	mux.HandleFunc("/api/accounts/add", s.handleAccountAdd)
+	mux.HandleFunc("/api/accounts/remove", s.handleAccountRemove)
+	mux.HandleFunc("/api/accounts/switch", s.handleAccountSwitch)
+	mux.HandleFunc("/api/accounts/check-quota", s.handleAccountCheckQuota)
 	mux.HandleFunc("/api/auth/check", s.handleAuthCheck)
 	mux.HandleFunc("/api/auth/login", s.handleWebAuthLogin)
 
@@ -400,4 +405,143 @@ func (s *Server) handleGatewayToggle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "enabled": req.Enable})
+}
+
+func (s *Server) handleAccountsList(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	accounts := s.manager.GetAccounts()
+	type accountDTO struct {
+		Email            string  `json:"email"`
+		Status           string  `json:"status"`
+		IsActive         bool    `json:"is_active"`
+		QuotaMax         int64   `json:"quota_max"`
+		QuotaLeft        int64   `json:"quota_left"`
+		QuotaUsed        int64   `json:"quota_used"`
+		QuotaPercentUsed float64 `json:"quota_percent_used"`
+		QuotaReset       string  `json:"quota_reset"`
+		LastCheckedAt    string  `json:"last_checked_at"`
+	}
+
+	activeEmail := s.cfg.ActiveAccountEmail
+	var dtos []accountDTO
+	for _, a := range accounts {
+		used := a.QuotaMax - a.QuotaLeft
+		if used < 0 {
+			used = 0
+		}
+		var pct float64
+		if a.QuotaMax > 0 {
+			pct = float64(used) / float64(a.QuotaMax) * 100
+		}
+
+		lastCheck := ""
+		if !a.LastCheckedAt.IsZero() {
+			lastCheck = a.LastCheckedAt.Format("15:04:05")
+		}
+
+		dtos = append(dtos, accountDTO{
+			Email:            a.Email,
+			Status:           a.Status,
+			IsActive:         strings.EqualFold(a.Email, activeEmail),
+			QuotaMax:         a.QuotaMax,
+			QuotaLeft:        a.QuotaLeft,
+			QuotaUsed:        used,
+			QuotaPercentUsed: pct,
+			QuotaReset:       a.QuotaReset,
+			LastCheckedAt:    lastCheck,
+		})
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"accounts":              dtos,
+		"active_email":          activeEmail,
+		"auto_rotate":           s.cfg.AutoRotateAccounts,
+	})
+}
+
+func (s *Server) handleAccountAdd(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if req.Email == "" || req.Password == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "error": "Email and password are required"})
+		return
+	}
+
+	err := s.manager.AddAccount(req.Email, req.Password)
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "error": err.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
+}
+
+func (s *Server) handleAccountRemove(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	err := s.manager.RemoveAccount(req.Email)
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "error": err.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
+}
+
+func (s *Server) handleAccountSwitch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	err := s.manager.SwitchAccount(req.Email)
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "error": err.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
+}
+
+func (s *Server) handleAccountCheckQuota(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	go s.manager.CheckHourlyQuotaNow()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "message": "Quota check triggered"})
 }

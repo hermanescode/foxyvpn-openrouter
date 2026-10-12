@@ -649,29 +649,42 @@
       </button>
     </div>
 
-    <!-- Firefox Account Card -->
+    <!-- Firefox Accounts (Multi-Account) Card -->
     <div class="card">
-      <div class="card-title">
-        <span>🦊 Firefox Account (FxA)</span>
-      </div>
-      <div id="authLoggedOut" style="display: flex; flex-direction: column; gap: 12px;">
-        <div class="form-group">
-          <label for="loginEmail">Email</label>
-          <input type="email" id="loginEmail" placeholder="you@domain.com">
+      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+        <div class="card-title">
+          <span>👥 Firefox Accounts Pool</span>
         </div>
-        <div class="form-group">
-          <label for="loginPassword">Password</label>
-          <input type="password" id="loginPassword" placeholder="••••••••">
+        <div style="display: flex; gap: 6px;">
+          <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 0.75rem;" onclick="checkAllQuotas()">🔄 Check</button>
+          <button class="btn" style="padding: 4px 10px; font-size: 0.75rem;" onclick="openAddAccountModal()">➕ Add</button>
         </div>
-        <button id="loginBtn" class="btn" onclick="doLogin()">Sign In</button>
       </div>
-      <div id="authLoggedIn" style="display: none; flex-direction: column; gap: 14px;">
-        <p style="font-size: 0.85rem;">Signed in as: <strong id="accountEmail">user@duck.com</strong></p>
-        <p style="font-size: 0.75rem; color: var(--text-muted);">
-          VPN proxy pass active and auto-renewed via Mozilla Guardian.
-        </p>
-        <button class="btn btn-danger" onclick="doLogout()">Sign Out</button>
+      <p style="font-size: 0.75rem; color: var(--text-muted);">
+        پایش خودکار هر ۱ ساعت: در صورت افت حجم به زیر ۵٪، اتصال فوراً به اکانت بعدی سوییچ می‌شود.
+      </p>
+      <div id="accountsListContainer" style="display: flex; flex-direction: column; gap: 8px; max-height: 220px; overflow-y: auto;">
+        <!-- Dynamic account rows -->
       </div>
+    </div>
+  </div>
+
+  <!-- Add Account Modal -->
+  <div id="addAccountModal" class="modal-overlay">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 style="font-size: 1rem; font-weight: 600;">Add Firefox Account</h3>
+        <button class="close-btn" onclick="closeAddAccountModal()">&times;</button>
+      </div>
+      <div class="form-group">
+        <label for="newAccountEmail">Firefox Account Email</label>
+        <input type="email" id="newAccountEmail" placeholder="user@domain.com">
+      </div>
+      <div class="form-group">
+        <label for="newAccountPassword">Password</label>
+        <input type="password" id="newAccountPassword" placeholder="••••••••">
+      </div>
+      <button id="btnSubmitAddAccount" class="btn" onclick="submitAddAccount()">Sign In & Add to Pool</button>
     </div>
   </div>
 
@@ -1301,9 +1314,173 @@
     }
   }
 
+  function openAddAccountModal() {
+    document.getElementById('newAccountEmail').value = '';
+    document.getElementById('newAccountPassword').value = '';
+    document.getElementById('addAccountModal').style.display = 'flex';
+  }
+
+  function closeAddAccountModal() {
+    document.getElementById('addAccountModal').style.display = 'none';
+  }
+
+  async function submitAddAccount() {
+    const email = document.getElementById('newAccountEmail').value.trim();
+    const password = document.getElementById('newAccountPassword').value;
+    if (!email || !password) {
+      showToast('Enter email and password');
+      return;
+    }
+    const btn = document.getElementById('btnSubmitAddAccount');
+    btn.disabled = true;
+    btn.innerText = 'Signing in...';
+
+    try {
+      const res = await fetch('/api/accounts/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast('Account added successfully!');
+        closeAddAccountModal();
+        loadAccounts();
+        fetchStatus();
+      } else {
+        showToast('Failed: ' + (data.error || 'Unknown error'));
+      }
+    } catch (e) {
+      showToast('Error: ' + e);
+    } finally {
+      btn.disabled = false;
+      btn.innerText = 'Sign In & Add to Pool';
+    }
+  }
+
+  async function loadAccounts() {
+    try {
+      const res = await fetch('/api/accounts');
+      const data = await res.json();
+      renderAccounts(data);
+    } catch (e) {
+      console.error('loadAccounts error:', e);
+    }
+  }
+
+  function renderAccounts(data) {
+    const container = document.getElementById('accountsListContainer');
+    if (!container) return;
+    const accounts = data.accounts || [];
+    if (accounts.length === 0) {
+      container.innerHTML = '<p style="font-size: 0.8rem; color: var(--text-muted); text-align: center; padding: 12px;">No accounts added yet. Click "Add" above.</p>';
+      return;
+    }
+
+    container.innerHTML = accounts.map(a => {
+      const totalGB = (a.quota_max / (1024*1024*1024)).toFixed(1);
+      const leftGB = (a.quota_left / (1024*1024*1024)).toFixed(2);
+      const usedGB = (a.quota_used / (1024*1024*1024)).toFixed(2);
+      const pct = a.quota_max > 0 ? (a.quota_used / a.quota_max * 100).toFixed(0) : 0;
+      const isActive = a.is_active;
+
+      let badgeClass = 'rgba(255, 255, 255, 0.1)';
+      let badgeText = a.status.toUpperCase();
+      let badgeColor = '#c9d1d9';
+      if (isActive) {
+        badgeClass = 'rgba(46, 160, 67, 0.2)';
+        badgeText = 'ACTIVE';
+        badgeColor = '#3fb950';
+      } else if (a.status === 'exhausted') {
+        badgeClass = 'rgba(248, 81, 73, 0.2)';
+        badgeText = 'EXHAUSTED (<5%)';
+        badgeColor = '#f85149';
+      }
+
+      return `
+        <div style="background: rgba(0,0,0,0.3); border: 1px solid ${isActive ? '#3fb950' : 'var(--card-border)'}; border-radius: 8px; padding: 8px 12px; display: flex; flex-direction: column; gap: 4px;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 0.82rem; font-weight: 600; color: #fff;">${escapeHtml(a.email)}</span>
+              <span style="background: ${badgeClass}; color: ${badgeColor}; font-size: 0.65rem; font-weight: 700; padding: 2px 6px; border-radius: 4px;">${badgeText}</span>
+            </div>
+            <div style="display: flex; gap: 4px;">
+              ${!isActive ? `<button class="btn btn-secondary" style="padding: 2px 8px; font-size: 0.7rem;" onclick="switchAccount('${escapeHtml(a.email)}')">Switch</button>` : ''}
+              <button class="btn btn-danger" style="padding: 2px 6px; font-size: 0.7rem;" onclick="removeAccount('${escapeHtml(a.email)}')">&times;</button>
+            </div>
+          </div>
+          <div style="display: flex; justify-content: space-between; font-size: 0.7rem; color: var(--text-muted);">
+            <span>Left: <strong style="color: #fff;">${leftGB} GB</strong> / ${totalGB} GB (${pct}% used)</span>
+            <span>${a.quota_reset ? 'Reset: ' + a.quota_reset.split('T')[0] : ''}</span>
+          </div>
+          <div style="width: 100%; height: 4px; background: rgba(255,255,255,0.06); border-radius: 2px; overflow: hidden;">
+            <div style="width: ${pct}%; height: 100%; background: ${pct > 90 ? '#f85149' : '#3fb950'};"></div>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  async function switchAccount(email) {
+    try {
+      showToast('Switching account...');
+      const res = await fetch('/api/accounts/switch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email })
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast('Switched to ' + email);
+        loadAccounts();
+        fetchStatus();
+      } else {
+        showToast('Failed: ' + (data.error || 'Error'));
+      }
+    } catch (e) {
+      showToast('Error: ' + e);
+    }
+  }
+
+  async function removeAccount(email) {
+    if (!confirm(`Are you sure you want to remove ${email}?`)) return;
+    try {
+      const res = await fetch('/api/accounts/remove', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email })
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast('Account removed');
+        loadAccounts();
+        fetchStatus();
+      } else {
+        showToast('Failed: ' + (data.error || 'Error'));
+      }
+    } catch (e) {
+      showToast('Error: ' + e);
+    }
+  }
+
+  async function checkAllQuotas() {
+    try {
+      showToast('Checking quotas...');
+      await fetch('/api/accounts/check-quota', { method: 'POST' });
+      setTimeout(() => {
+        loadAccounts();
+        fetchStatus();
+        showToast('Quotas refreshed!');
+      }, 2000);
+    } catch (e) {
+      showToast('Error: ' + e);
+    }
+  }
+
   // Init
   fetchStatus();
   loadServers();
+  loadAccounts();
   refreshLogs();
   checkGatewayStatus();
   pollTimer = setInterval(() => {

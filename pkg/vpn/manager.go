@@ -462,7 +462,12 @@ func (m *VPNManager) doConnect(country, serverAddr string) error {
 			if err != nil {
 				return fmt.Errorf("retry proxy pass failed: %w", err)
 			}
-		} else {
+			if strings.Contains(err.Error(), "429") || strings.Contains(strings.ToLower(err.Error()), "quota") {
+				m.AddLog(fmt.Sprintf("⚠️ Quota exhausted on account %s! Rotating to next account...", m.cfg.Email))
+				if m.RotateToNextAccount() {
+					return nil
+				}
+			}
 			return fmt.Errorf("guardian fetch proxy pass failed: %w", err)
 		}
 	}
@@ -476,6 +481,7 @@ func (m *VPNManager) doConnect(country, serverAddr string) error {
 		m.quotaMax = maxBytes
 		m.quotaLeft = leftBytes
 		m.quotaReset = pass.QuotaReset
+		go m.cfg.UpdateAccountQuota(m.cfg.Email, maxBytes, leftBytes, pass.QuotaReset)
 	}
 	m.mu.Unlock()
 
@@ -664,6 +670,178 @@ func (m *VPNManager) Disconnect() error {
 	return nil
 }
 
+func (m *VPNManager) GetAccounts() []config.Account {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	res := make([]config.Account, len(m.cfg.Accounts))
+	copy(res, m.cfg.Accounts)
+	return res
+}
+
+func (m *VPNManager) AddAccount(email, password string) error {
+	m.AddLog(fmt.Sprintf("Adding new Firefox Account (%s)...", email))
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	loginResp, err := core.FxaLogin(ctx, email, password)
+	if err != nil {
+		m.AddLog(fmt.Sprintf("Failed to sign in to account %s: %v", email, err))
+		return err
+	}
+
+	tokenResp, err := core.FxaOAuthToken(ctx, loginResp.SessionToken)
+	if err != nil {
+		m.AddLog(fmt.Sprintf("OAuth token exchange failed for %s: %v", email, err))
+		return err
+	}
+
+	guardianEndpoint := m.cfg.GuardianEndpoint
+	if guardianEndpoint == "" {
+		guardianEndpoint = core.GuardianEndpointDefault
+	}
+
+	// Fetch initial proxy pass to retrieve quota and verify activation
+	passCtx, passCancel := context.WithTimeout(context.Background(), 20*time.Second)
+	pass, err := core.FetchProxyPass(passCtx, guardianEndpoint, tokenResp.AccessToken)
+	passCancel()
+	if err != nil {
+		actCtx, actCancel := context.WithTimeout(context.Background(), 20*time.Second)
+		_, _ = core.ActivateGuardian(actCtx, guardianEndpoint, tokenResp.AccessToken)
+		actCancel()
+
+		retryCtx, retryCancel := context.WithTimeout(context.Background(), 20*time.Second)
+		pass, _ = core.FetchProxyPass(retryCtx, guardianEndpoint, tokenResp.AccessToken)
+		retryCancel()
+	}
+
+	var quotaMax, quotaLeft int64
+	var quotaReset string
+	status := "standby"
+	if pass != nil {
+		if pass.QuotaMax != "" {
+			quotaMax, _ = strconv.ParseInt(pass.QuotaMax, 10, 64)
+			quotaLeft, _ = strconv.ParseInt(pass.QuotaLeft, 10, 64)
+			quotaReset = pass.QuotaReset
+		}
+	}
+
+	acc := config.Account{
+		Email:         email,
+		AccessToken:   tokenResp.AccessToken,
+		RefreshToken:  tokenResp.RefreshToken,
+		ExpiresIn:     tokenResp.ExpiresIn,
+		ObtainedAt:    time.Now(),
+		QuotaMax:      quotaMax,
+		QuotaLeft:     quotaLeft,
+		QuotaReset:    quotaReset,
+		LastCheckedAt: time.Now(),
+		Status:        status,
+	}
+
+	if err := m.cfg.UpsertAccount(acc); err != nil {
+		return err
+	}
+
+	// If no account is active, make this one active
+	if m.cfg.ActiveAccountEmail == "" || m.cfg.RefreshToken == "" {
+		_, _ = m.cfg.SetActiveAccount(email)
+	}
+
+	m.AddLog(fmt.Sprintf("Account %s successfully added with %s quota", email, ByteFormat(quotaLeft)))
+	return nil
+}
+
+func (m *VPNManager) RemoveAccount(email string) error {
+	m.AddLog(fmt.Sprintf("Removing account %s...", email))
+	wasActive := strings.EqualFold(m.cfg.ActiveAccountEmail, email)
+	if err := m.cfg.RemoveAccount(email); err != nil {
+		return err
+	}
+
+	if wasActive {
+		_ = m.Disconnect()
+		if len(m.cfg.Accounts) > 0 {
+			next := m.cfg.Accounts[0].Email
+			m.AddLog(fmt.Sprintf("Active account was removed. Switching to %s...", next))
+			_ = m.SwitchAccount(next)
+		}
+	}
+	m.AddLog(fmt.Sprintf("Account %s removed", email))
+	return nil
+}
+
+func (m *VPNManager) SwitchAccount(email string) error {
+	m.AddLog(fmt.Sprintf("Switching active account to %s...", email))
+	acc, err := m.cfg.SetActiveAccount(email)
+	if err != nil || acc == nil {
+		return fmt.Errorf("account not found: %s", email)
+	}
+
+	m.mu.Lock()
+	wasConnected := m.state == "connected"
+	m.mu.Unlock()
+
+	if wasConnected {
+		_ = m.Disconnect()
+		time.Sleep(1 * time.Second)
+		_ = m.Connect("", "")
+	}
+
+	m.AddLog(fmt.Sprintf("Active account switched to %s", email))
+	return nil
+}
+
+func (m *VPNManager) RotateToNextAccount() bool {
+	m.mu.RLock()
+	accounts := m.cfg.Accounts
+	current := m.cfg.ActiveAccountEmail
+	m.mu.RUnlock()
+
+	if len(accounts) <= 1 {
+		return false
+	}
+
+	// Find next candidate
+	var candidate *config.Account
+	startIndex := 0
+	for i, a := range accounts {
+		if strings.EqualFold(a.Email, current) {
+			startIndex = (i + 1) % len(accounts)
+			break
+		}
+	}
+
+	for i := 0; i < len(accounts); i++ {
+		idx := (startIndex + i) % len(accounts)
+		a := accounts[idx]
+		if strings.EqualFold(a.Email, current) {
+			continue
+		}
+		// Candidate must not be exhausted
+		if a.Status != "exhausted" && (a.QuotaMax == 0 || float64(a.QuotaLeft)/float64(a.QuotaMax) > 0.05) {
+			candidate = &a
+			break
+		}
+	}
+
+	if candidate == nil {
+		m.AddLog("⚠️ All configured Firefox accounts have depleted quota! Please add a new account.")
+		return false
+	}
+
+	m.AddLog(fmt.Sprintf("🔄 Auto-rotating account: %s -> %s (remaining: %s)", current, candidate.Email, ByteFormat(candidate.QuotaLeft)))
+	_ = m.SwitchAccount(candidate.Email)
+	return true
+}
+
+func ByteFormat(bytes int64) string {
+	if bytes <= 0 {
+		return "0 GB"
+	}
+	gb := float64(bytes) / (1024 * 1024 * 1024)
+	return fmt.Sprintf("%.2f GB", gb)
+}
+
 func (m *VPNManager) Login(email, password string) error {
 	m.AddLog(fmt.Sprintf("Logging in to Firefox Account (%s)...", email))
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
@@ -696,16 +874,86 @@ func (m *VPNManager) Logout() error {
 }
 
 func (m *VPNManager) supervisorLoop() {
-	ticker := time.NewTicker(15 * time.Second)
-	defer ticker.Stop()
+	healthTicker := time.NewTicker(15 * time.Second)
+	quotaTicker := time.NewTicker(1 * time.Hour)
+	defer healthTicker.Stop()
+	defer quotaTicker.Stop()
 
 	for {
 		select {
 		case <-m.stopChan:
 			return
-		case <-ticker.C:
+		case <-healthTicker.C:
 			m.checkHealthAndReconnect()
 			m.checkProxyPassRenewal()
+		case <-quotaTicker.C:
+			m.checkHourlyQuota()
+		}
+	}
+}
+
+func (m *VPNManager) CheckHourlyQuotaNow() {
+	m.checkHourlyQuota()
+}
+
+func (m *VPNManager) checkHourlyQuota() {
+	m.AddLog("Running hourly quota check for all accounts...")
+	m.mu.RLock()
+	accounts := m.cfg.Accounts
+	activeEmail := m.cfg.ActiveAccountEmail
+	guardian := m.cfg.GuardianEndpoint
+	if guardian == "" {
+		guardian = core.GuardianEndpointDefault
+	}
+	m.mu.RUnlock()
+
+	for _, a := range accounts {
+		token := a.AccessToken
+		if token == "" {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		pass, err := core.FetchProxyPass(ctx, guardian, token)
+		cancel()
+		if err != nil {
+			// Try refresh token
+			refCtx, refCancel := context.WithTimeout(context.Background(), 15*time.Second)
+			tokResp, refErr := core.FxaRefreshToken(refCtx, a.RefreshToken)
+			refCancel()
+			if refErr == nil {
+				token = tokResp.AccessToken
+				retryCtx, retryCancel := context.WithTimeout(context.Background(), 15*time.Second)
+				pass, _ = core.FetchProxyPass(retryCtx, guardian, token)
+				retryCancel()
+			}
+		}
+
+		if pass != nil && pass.QuotaMax != "" {
+			qMax, _ := strconv.ParseInt(pass.QuotaMax, 10, 64)
+			qLeft, _ := strconv.ParseInt(pass.QuotaLeft, 10, 64)
+			m.cfg.UpdateAccountQuota(a.Email, qMax, qLeft, pass.QuotaReset)
+			if strings.EqualFold(a.Email, activeEmail) {
+				m.mu.Lock()
+				m.quotaMax = qMax
+				m.quotaLeft = qLeft
+				m.quotaReset = pass.QuotaReset
+				m.mu.Unlock()
+			}
+		}
+	}
+
+	// Check if active account quota is below 5%
+	m.mu.RLock()
+	activeMax := m.quotaMax
+	activeLeft := m.quotaLeft
+	currentEmail := m.cfg.ActiveAccountEmail
+	m.mu.RUnlock()
+
+	if activeMax > 0 {
+		pctRemaining := float64(activeLeft) / float64(activeMax) * 100
+		if pctRemaining <= 5.0 {
+			m.AddLog(fmt.Sprintf("⚠️ Hourly check: Active account (%s) quota is %.1f%% (< 5%%, %s left). Triggering auto-rotation...", currentEmail, pctRemaining, ByteFormat(activeLeft)))
+			m.RotateToNextAccount()
 		}
 	}
 }
